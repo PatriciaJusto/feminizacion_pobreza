@@ -1,0 +1,22 @@
+/* Justificación del texto */
+p {
+  text-align: justify;
+}
+
+/* Centrar figuras */
+figure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Centrar tablas */
+table {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Opcional: que los títulos tengan un poco más de espacio */
+h1, h2, h3 {
+  margin-top: 1.5em;
+}
