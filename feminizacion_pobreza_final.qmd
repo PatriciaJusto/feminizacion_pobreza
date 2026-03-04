@@ -1,0 +1,4133 @@
+---
+title: "Resultados feminización pobreza"
+subtitle: "Análisis datos ENIGH 2024"
+date: "02/24/2026"
+title-block-banner: true
+
+format:
+  html:
+    toc: true
+    toc-depth: 5
+    collapsed: true
+    smooth-scroll: true
+    theme: flatly
+    df_print: paged
+    code_folding: show
+    toc-location: left
+    highlight-style: vim-dark
+    fig-align: center
+    css: style.css
+    df-print: kable
+    embed-resources: true
+---
+
+# ENIGH 2024  
+
+Para el análisis se utilizó la malla de datos previamente preparada  
+
+
+```{r}
+#| label: Paqueterias
+#| warning: false
+#| message: false
+#| include: false
+library(tidyverse)
+library(janitor)
+library(readr)
+library(readxl)
+library(haven)
+library(gt)
+library(gtsummary)
+library(survey)
+```
+
+
+```{r}
+#| label: Importación de malla de datos
+#| warning: false
+#| message: false
+#| include: false
+fem_pob <- readRDS(
+  "../data/feminizacion_final.rds") %>% 
+  clean_names()
+```
+
+
+
+
+```{r}
+#| label: Diseño individual
+#| warning: false
+#| message: false
+#| include: false
+
+design_enigh_pob_todo <- svydesign(
+  ids = ~upm,
+  strata = ~est_dis,
+  weights = ~factor_pob,
+  data = fem_pob,
+  nest = TRUE
+)
+options(survey.lonely.psu = "adjust") 
+# Verificamos el diseño
+summary(design_enigh_pob_todo)
+
+# Revisión del ponderador pob
+summary(design_enigh_pob_todo$variables$factor_pob)
+# Todo bien, no hay NA´s en el ponderador
+
+```
+
+
+
+
+# Variables transversales  
+De manera inicial se realizó una evaluación "general" de la población, es decir, se calculó la cantidad de hombres y mujeres, el promedio de edad por sexo y las proporciones por sexo de las variables transversales; este análisis inicial constituye el "cuadro 1", que generalmente pretende describir/mostrar los estimadores de la población hipotética de estudio (encuestas como ENIGH estudian una muestra que pretende ser representativa de una población hipotética: la población nacional, por eso se denominan estimadores ya que los valores "reales" sólo podrían obtenerse si se encuestara a la totalidad de la población mexicana)  
+
+Las variables transversales evaluadas son:  
+- Zona urbana/rural  
+- Autopercepción indígena (etnia)  
+- Afrodescendencia  
+- Discapacidad  
+- Pobreza (por líneas LPE LPEI segun zona urbana/rural)
+
+```{r}
+#| label: Funcion transversales
+#| warning: false
+#| message: false
+#| include: false
+fila_transversal_factor <- function(
+  design,
+  var_factor,
+  etiqueta_base,
+  var_grupo = "sexo_cat"
+) {
+
+  f_var <- as.formula(paste0("~", var_factor))
+  f_grp <- as.formula(paste0("~", var_grupo))
+
+  ## -----------------------------
+  ## Proporciones + IC95%
+  ## -----------------------------
+  prop_ci <- svyby(
+    f_var,
+    f_grp,
+    design,
+    svymean,
+    na.rm = TRUE,
+    vartype = "ci"
+  ) %>%
+    as_tibble()
+
+  prop_long <- prop_ci %>%
+  pivot_longer(
+    cols = starts_with(var_factor),
+    names_to = "categoria",
+    values_to = "prop"
+  ) %>%
+  mutate(
+    categoria = gsub(paste0("^", var_factor), "", categoria),
+    categoria = gsub("^\\.", "", categoria),
+    categoria = factor(
+      categoria,
+      levels = levels(design$variables[[var_factor]])
+    )
+  )
+
+  ci_long <- prop_ci %>%
+    pivot_longer(
+      cols = starts_with(c("ci_l", "ci_u")),
+      names_to = c("tipo", "categoria"),
+      names_pattern = "(ci_l|ci_u)\\.(.*)",
+      values_to = "valor"
+    ) %>%
+    pivot_wider(
+      names_from = tipo,
+      values_from = valor
+    ) %>%
+    mutate(
+      categoria = gsub(paste0("^", var_factor), "", categoria),
+      categoria = gsub("^\\.", "", categoria)
+    )
+
+  tabla_prop <- prop_long %>%
+    left_join(ci_long, by = c(var_grupo, "categoria"))
+
+  ## -----------------------------
+  ## n ponderada
+  ## -----------------------------
+  tabla_n <- svyby(
+  f_var,
+  f_grp,
+  design,
+  svytotal,
+  na.rm = TRUE
+) %>%
+  as_tibble() %>%
+  pivot_longer(
+    cols = starts_with(var_factor),
+    names_to = "categoria",
+    values_to = "n"
+  ) %>%
+  mutate(
+    categoria = gsub(paste0("^", var_factor), "", categoria),
+    categoria = gsub("^\\.", "", categoria),
+    categoria = factor(
+      categoria,
+      levels = levels(design$variables[[var_factor]])
+    ),
+    n = round(n, 0)
+  )
+  ## -----------------------------
+  ## Cuadro final
+  ## -----------------------------
+  tabla_final <- tabla_prop %>%
+    left_join(tabla_n, by = c(var_grupo, "categoria")) %>%
+    mutate(
+      prop_ic = sprintf(
+        "%.1f%% (%.1f, %.1f)",
+        prop * 100,
+        ci_l * 100,
+        ci_u * 100
+      )
+    ) %>%
+    select(
+      categoria,
+      !!sym(var_grupo),
+      n,
+      prop_ic
+    ) %>%
+    pivot_wider(
+      names_from = !!sym(var_grupo),
+      values_from = c(n, prop_ic)
+    ) %>%
+    mutate(
+      Característica = paste0(etiqueta_base, ": ", categoria)
+    ) %>%
+    select(
+      Característica,
+      Hombre_n = n_Hombre,
+      Hombre_Prop_IC = prop_ic_Hombre,
+      Mujer_n = n_Mujer,
+      Mujer_Prop_IC = prop_ic_Mujer
+    )
+
+  return(tabla_final)
+}
+```
+
+
+```{r}
+#| label: Esqueleto cuadro
+#| warning: false
+#| message: false
+#| include: false
+cuadro_simple <- data.frame(
+  Característica = character(),
+  Hombre_n = numeric(),
+  Hombre_Prop_IC = character(),
+  Mujer_n = numeric(),
+  Mujer_Prop_IC = character(),
+  stringsAsFactors = FALSE
+)
+```
+
+
+
+```{r}
+#| label: n poblacional y edad
+#| warning: false
+#| message: false
+#| include: false
+
+# Calculamos n ponderado total por sexo
+n_total <- svytable(~sexo_cat, design_enigh_pob_todo)
+
+# Total poblacional
+total_pob <- sum(n_total)
+
+# Proporción hombres y mujeres
+prop_total <- prop.table(n_total)
+
+# agregamos eso al cuadro
+cuadro_simple <- rbind(cuadro_simple, data.frame(
+  Característica = "N ponderado",
+  Hombre_n = round(n_total["Hombre"], 0),
+  Hombre_Prop_IC = paste0(
+    sprintf("%.1f", prop_total["Hombre"] * 100), "%"
+  ),
+  Mujer_n = round(n_total["Mujer"], 0),
+  Mujer_Prop_IC = paste0(
+    sprintf("%.1f", prop_total["Mujer"] * 100), "%"
+  ),
+  stringsAsFactors = FALSE
+))
+
+# Edad
+# Calculamos media de edad por sexo en la población
+edad_resultados <- svyby(~edad, ~sexo_cat, design_enigh_pob_todo, 
+                         svymean, na.rm = TRUE, vartype = "ci")
+
+# agregamos eso al cuadro
+cuadro_simple <- rbind(cuadro_simple, data.frame(
+  Característica = "Edad, media (IC95%)",
+  Hombre_n = NA,
+  Hombre_Prop_IC = paste0(
+    sprintf("%.1f", edad_resultados$edad[edad_resultados$sexo_cat == "Hombre"]),
+    " (", sprintf("%.1f", edad_resultados$ci_l[edad_resultados$sexo_cat == "Hombre"]),
+    ", ", sprintf("%.1f", edad_resultados$ci_u[edad_resultados$sexo_cat == "Hombre"]), ")"
+  ),
+  Mujer_n = NA,
+  Mujer_Prop_IC = paste0(
+    sprintf("%.1f", edad_resultados$edad[edad_resultados$sexo_cat == "Mujer"]),
+    " (", sprintf("%.1f", edad_resultados$ci_l[edad_resultados$sexo_cat == "Mujer"]),
+    ", ", sprintf("%.1f", edad_resultados$ci_u[edad_resultados$sexo_cat == "Mujer"]), ")"
+  ),
+  stringsAsFactors = FALSE
+))
+
+
+```
+
+
+
+```{r}
+#| label: cuadro uno
+#| warning: false
+#| message: false
+#| include: false
+cuadro_simple <- rbind(
+  cuadro_simple,
+  fila_transversal_factor(
+    design_enigh_pob_todo,
+    var_factor = "zona_cat",
+    etiqueta_base = "Zona"
+  ),
+  fila_transversal_factor(
+    design_enigh_pob_todo,
+    var_factor = "etnia_cat",
+    etiqueta_base = "Autopercepción indígena"
+  ),
+  fila_transversal_factor(
+    design_enigh_pob_todo,
+    var_factor = "afrod_cat",
+    etiqueta_base = "Afrodescendencia"
+  ),
+  fila_transversal_factor(
+    design_enigh_pob_todo,
+    var_factor = "discapacidad_gral",
+    etiqueta_base = "Discapacidad"
+  ),
+  fila_transversal_factor(
+    design_enigh_pob_todo,
+    var_factor = "pobreza_cat",
+    etiqueta_base = "Pobreza")
+)
+```
+
+En el siguiente cuadro se presentan algunas de las características de la población mexicana en el año de estudio (2024) mediante el cálculo de estimadores tomando en consideración el diseño complejo de encuesta (estratificación, conglomeración del diseño, ponderadores poblacionales). En este primer cuadro se inlcuye a toda la población encuestada durante la ENIGH 2024, no hay restricción de edad o por alguna otra característica.
+
+
+```{r}
+#| label: vista cuadro uno
+#| warning: false
+#| message: false
+#| echo: false
+cuadro_simple_gt <- cuadro_simple %>%
+  gt() %>%
+  tab_header(
+    title = "Cuadro 1. Características sociodemográficas de la población",
+    subtitle = "Estimaciones ponderadas, ENIGH México 2024"
+  ) %>%
+  tab_spanner(
+    label = "Hombres",
+    columns = c(Hombre_n, Hombre_Prop_IC)
+  ) %>%
+  tab_spanner(
+    label = "Mujeres",
+    columns = c(Mujer_n, Mujer_Prop_IC)
+  ) %>%
+  cols_label(
+    Característica = "",
+    Hombre_n = "N",
+    Hombre_Prop_IC = "% (IC95%)",
+    Mujer_n = "N",
+    Mujer_Prop_IC = "% (IC95%)"
+  ) %>%
+  fmt_markdown(everything()) %>%
+  opt_table_outline() %>%
+  opt_all_caps(FALSE)
+
+cuadro_simple_gt
+
+```
+
+
+
+
+# Variables feminización
+
+Para efectos del análisis denominaremos "variables de feminización" a las variables objetivo del estudio, en las que se incluyen:  
+- Tiempo no remunerado  
+- Dependencia económica  
+- Tipo de jefatura (a nivel hogar)  
+- Acceso a mercado laboral  
+- Acceso financiero (a nivel hogar)  
+- Acceso propiedad (a nivel vivienda)  
+
+
+Para cada variable de feminización, se analizó la proporción de hombres vs mujeres y también se realizaron estratificaciones (cruce) por las variables transversales, siempre manteniendo las separaciones entre sexos.  
+En el caso del Tiempo no Remunerado (variable contínua), no se calcularon proporciones, sino medias (promedio de horas semanales), de igual forma manteniendo las separaciones por sexo. 
+
+Es importante mencionar que el análisis no incluye la determinación de estratificación máxima (es decir, el número de veces que se puede estratificar una determinada variable segun otra/s variables), ya que ese tipo de análisis se realiza a priori (diseño del estudio) y no se incluyó en la cotización del proyecto, sin embargo en los bloques específicos de cada variable de feminización se indican que estratificaciones estan sujetas a baja calidad por múltiple segmentación; dichos datos  pueden ser referenciados para fines académicos, sin embargo el estimador no es confiable para asegurar que es extrapolable a la población nacional.  
+
+Las recomendaciones para este tipo de situaciones son:  
+
+- Realizar la evaluación a priori de los niveles de segmentación durante el diseño de estudio  
+
+- Uso de variables con el menor número de categorías informativas posibles o colapso de categorías similares  
+
+- Si el objetivo son poblaciones minoritarias o altamente específicas (ej, afrodescendencia, jef@s uniparentales con hijos residentes afrodescendientes en pobreza extrema) se deben evaluar los puntos anteriores y utilizar datos (ó construir mallas de datos) de funtes que esten enriquecidas con las poblaciones dianas; también se pueden utilizar diseños de estudio de encuestas múltiples (ej. evaluación conjunta de ENIGH 2018, 2020, 2022, 2024) para aumentar el número de observaciones  
+
+
+El análisis se realizo con software R versión 4.5.1, con la paquetería survey para el análisis de encuestas de diseño complejo. Todas las estimaciones incorporaron la estratificación y conglomeración del diseño, así como los ponderadores específicos dependiendo del análisis (diseño de encuesta compleja)  
+
+A partir de esta sección (variables de feminización) ya no se ocupa la malla completa de datos, se utilizan los datos solamente de personas de 12 años y más en todos los casos.  
+
+
+```{r}
+#| label: subset 12años 
+#| message: false
+#| include: false
+
+# Hacemos restricción de los datos (todos) a personas de 12 años y más
+design_enigh_pob <- subset(design_enigh_pob_todo, edad >= 12)
+```
+
+
+## Tiempo no remunerado (TNR)
+
+
+
+```{r}
+#| label: funcion general var continuas
+#| message: false
+#| include: false
+
+
+calculos_var_cont <- function(
+  design,
+  variable,
+  etiqueta
+){
+
+  var_sym <- rlang::sym(variable)
+
+  res <- svyby(
+    as.formula(paste0("~", variable)),
+    ~sexo_cat,
+    design,
+    svymean,
+    vartype = c("ci","se"),
+    level = 0.95,
+    na.rm = TRUE
+  ) %>%
+    as_tibble() %>%
+
+    # ---- estandarizamos nombres ----
+    rename(
+      media = !!variable,
+      li = ci_l,
+      ls = ci_u
+    ) %>%
+
+    # ---- métricas derivadas ----
+    mutate(
+      cv = (se / media) * 100,
+
+      media_ic = sprintf(
+        "%.2f (%.2f, %.2f)",
+        media, li, ls
+      ),
+
+      variable = etiqueta
+    ) %>%
+
+    select(
+      variable,
+      sexo_cat,
+      media,
+      se,
+      li,
+      ls,
+      cv,
+      media_ic
+    )
+
+  return(res)
+}
+```
+
+
+
+```{r}
+#| label: bloque general TNR
+#| message: false
+#| include: false
+
+tnr_bloque_general <- calculos_var_cont(
+  design_enigh_pob,
+  "tiempo_no_remunerado_top",
+  "Tiempo no remunerado (horas)"
+)
+```
+
+
+
+
+```{r}
+#| label: bloque general TNR gt
+#| message: false
+#| echo: false
+tnr_bloque_general %>%
+    select(sexo_cat, media_ic) %>% 
+  gt() %>%
+   tab_header(
+    title = "Promedio de tiempo no remunerado por sexo",
+    subtitle = "Estimaciones ponderadas, ENIGH 2024 México") %>% 
+  cols_label(
+    sexo_cat = "Sexo",
+    media_ic = "Media (IC95%)"
+  ) %>%
+  cols_align("center")
+```
+
+
+
+
+### TNR por transversales
+
+
+
+
+```{r}
+#| label: funcion estratificar continuas y homogenizar
+#| message: false
+#| include: false
+estratificar_continuas <- function(
+  design,
+  var_tiempo,
+  var_transversal,
+  etiqueta_var
+) {
+
+  ## ---------- Media + IC ----------
+  medias <- svyby(
+    as.formula(paste0("~", var_tiempo)),
+    as.formula(paste0("~sexo_cat + ", var_transversal)),
+    design,
+    svymean,
+    vartype = c("ci","se"),
+    level = 0.95,
+    na.rm = TRUE
+  ) %>%
+    as_tibble() %>%
+
+    mutate(
+      cv = (se / .data[[var_tiempo]]) * 100,
+
+      media_ic = sprintf(
+        "%.1f (%.1f, %.1f)",
+        .data[[var_tiempo]],
+        ci_l,
+        ci_u
+      )
+    )
+  cv_tab <- medias %>%
+    group_by(!!sym(var_transversal)) %>%
+    summarise(
+      cv = sprintf("%.1f", mean(cv, na.rm = TRUE)),
+      .groups = "drop"
+    )
+  medias_wide <- medias %>%
+    select(
+      !!sym(var_transversal),
+      sexo_cat,
+      media_ic
+    ) %>%
+    pivot_wider(
+      names_from = sexo_cat,
+      values_from = media_ic
+    )
+  final <- medias_wide %>%
+    left_join(cv_tab, by = var_transversal) %>%
+    mutate(variable = etiqueta_var) %>%
+    relocate(variable)
+
+  return(final)
+}
+
+  ## ------Función para homogenizar formato de salida de medias ------
+homogeniza_medias <- function(
+  data,
+  var_transversal,
+  nombre_transversal
+) {
+  data %>%
+    rename(
+      categoria = !!sym(var_transversal)
+    ) %>%
+    mutate(
+      transversal = nombre_transversal
+    ) %>%
+    select(
+      transversal,
+      categoria,
+      Hombre,
+      Mujer
+    )
+}
+
+
+
+```
+
+
+
+```{r}
+#| label: TNR por transversales
+#| warning: false
+#| message: false
+#| include: false
+tnr_zona <- estratificar_continuas(
+  design = design_enigh_pob,
+  var_tiempo = "tiempo_no_remunerado_top",
+  var_transversal = "zona_cat",
+  etiqueta_var = "Tiempo no remunerado (horas)"
+)
+
+tnr_etnia <- estratificar_continuas(
+  design = design_enigh_pob,
+  var_tiempo = "tiempo_no_remunerado_top",
+  var_transversal = "etnia_cat",
+  etiqueta_var = "Tiempo no remunerado (horas)"
+)
+
+
+tnr_afro <- estratificar_continuas(
+  design = design_enigh_pob,
+  var_tiempo = "tiempo_no_remunerado_top",
+  var_transversal = "afrod_cat",
+  etiqueta_var = "Tiempo no remunerado (horas)"
+)
+
+tnr_discap <- estratificar_continuas(
+  design = design_enigh_pob,
+  var_tiempo = "tiempo_no_remunerado_top",
+  var_transversal = "discapacidad_gral",
+  etiqueta_var = "Tiempo no remunerado (horas)"
+)
+
+
+tnr_pobreza <- estratificar_continuas(
+  design = design_enigh_pob,
+  var_tiempo = "tiempo_no_remunerado_top",
+  var_transversal = "pobreza_cat",
+  etiqueta_var = "Tiempo no remunerado (horas)"
+)
+
+# Usamos la función de homogenización para todas la medias que calculamos
+tnr_medias_tabla <- bind_rows(
+  homogeniza_medias(tnr_zona,    "zona_cat",          "Zona"),
+  homogeniza_medias(tnr_etnia,   "etnia_cat",         "Autopercepción indígena"),
+  homogeniza_medias(tnr_afro,    "afrod_cat",         "Afrodescendencia"),
+  homogeniza_medias(tnr_discap,  "discapacidad_gral", "Discapacidad"),
+  homogeniza_medias(tnr_pobreza, "pobreza_cat",       "Pobreza")
+)
+
+
+```
+
+
+Las desagregaciones/estratificaciones en este bloque permiten una generalización confiable al universo de estudio en todos sus niveles de desagregación
+
+
+```{r}
+#| label: cuadro medias TNR por transversales
+#| warning: false
+#| message: false
+#| echo: false
+tnr_medias_tabla %>%
+  gt(
+    groupname_col = "transversal",
+    rowname_col   = "categoria"
+  ) %>%
+  cols_label(
+    Hombre = "Hombres\nMedia (IC95%)",
+    Mujer  = "Mujeres\nMedia (IC95%)"
+  ) %>%
+  tab_header(
+    title = "Tiempo no remunerado por sexo",
+    subtitle = "Media (h) semanal, ENIGH México 2024"
+  ) %>%
+  opt_all_caps()
+```
+
+
+Ejemplo de lectura: los hombres en zonas urbanas tuvieron una media semanal de 10.8h de TNR mientras que aquellos en zona rural tuvieron una media semanal de 10.1h...
+
+
+
+
+
+
+```{r}
+#| label: Paletas de colores
+#| warning: false
+#| message: false
+#| include: false
+
+# colores para el sexo
+pal_sexo <- c(
+  "Hombre" = "#0e204ef0",
+  "Mujer"  = "#570051ff"
+)
+
+# colores paleta extra
+
+pal_categ <- c(
+  "#1a2b56ff",
+  "#ffe600ff",
+  "#77006fff",
+  "#007f66ff",
+  "#a1a1a1ff"
+)
+
+
+```
+
+
+
+
+
+```{r}
+#| label: funcion preparar datos para grafica
+#| warning: false
+#| message: false
+#| include: false
+prepara_plot <- function(data){
+  data %>%
+    pivot_longer(
+      cols = c(Hombre, Mujer),
+      names_to = "sexo",
+      values_to = "valor"
+    ) %>%
+    mutate(
+      media = as.numeric(str_extract(valor, "^[0-9.]+")),
+      ci_l  = as.numeric(str_extract(valor, "(?<=\\()[0-9.]+")),
+      ci_u  = as.numeric(str_extract(valor, "(?<=, )[0-9.]+(?=\\))"))
+    )
+}
+```
+
+
+
+```{r}
+#| label: Extraccion datos grafica 1 y 2
+#| warning: false
+#| message: false
+#| include: false
+
+tnr_general <- tnr_bloque_general %>%
+  select(sexo_cat, media_ic) %>%
+  pivot_wider(
+    names_from = sexo_cat,
+    values_from = media_ic
+  ) %>%
+  mutate(
+    transversal = "General",
+    categoria = ""
+  ) %>%
+  select(transversal, categoria, Hombre, Mujer)
+
+
+zona_plot <- tnr_medias_tabla %>%
+  filter(transversal == "Zona") %>%
+  select(transversal, categoria, Hombre, Mujer)
+
+plot1_data <- bind_rows(tnr_general, zona_plot) %>%
+  prepara_plot() %>% 
+  drop_na()
+
+plot1_data <- plot1_data %>% 
+  dplyr::mutate(
+    sexo = factor(sexo,
+                  levels = c("Hombre", "Mujer"),
+      ),
+    categoria = factor(categoria,
+                  levels = c("Total", "Urbano", "Rural"))
+  )
+
+```
+
+
+g1: TNR promedio semanal general (solo segmentado por sexo) y por zona urabana/rual por sexo
+
+
+```{r}
+#| label: g1
+#| warning: false
+#| message: false
+#| echo: false
+
+g1 <- ggplot(plot1_data, 
+  aes(x = categoria, y = media, fill = sexo)) + 
+
+    geom_col(position = position_dodge(width = 1.0), width = 0.7) + 
+    
+  scale_x_discrete(
+  labels = function(x) ifelse(is.na(x), "", x)
+  )+
+    
+    scale_y_continuous( 
+      breaks = seq(0, 35, 5), 
+      limits = c(0, 35), 
+      expand = expansion(mult = c(0, 0.05)) 
+    )+ 
+      
+  geom_errorbar( 
+    aes(ymin = ci_l, ymax = ci_u), 
+    position = position_dodge(width = 1.0), 
+    width = 0.3, 
+    linewidth = 0.7, 
+    color = "#a18d06f4" 
+  ) + 
+      
+  geom_text( 
+    aes( label = gsub(" \\(", "\n(", valor), y = ci_u + 1.5 ), 
+    position = position_dodge(width = 1.0), 
+    size = 2.5, 
+    lineheight = 0.9 
+  ) + 
+        
+  facet_wrap(~transversal, 
+    scales = "free_x"
+  ) + 
+    
+  scale_fill_manual( 
+    values = c( pal_sexo ) 
+    )+ 
+    
+  labs(
+    y = "Horas semanales",
+    x = NULL, fill = NULL 
+  ) +
+  
+  theme_light() + 
+  
+  theme( 
+    legend.position = "top", 
+    strip.text = element_text( 
+      face = "bold", color = "black") 
+  ) 
+  
+g1
+
+
+
+
+
+
+
+```
+
+
+```{r}
+#| label: exportar g1
+#| warning: false
+#| message: false
+#| include: false
+ggsave("graf1_TNR.png", plot = g1, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+```
+
+
+
+
+
+```{r}
+#| label: datos g2
+#| warning: false
+#| message: false
+#| include: false
+plot2_data <- tnr_medias_tabla %>%
+  filter(transversal %in%
+           c("Autopercepción indígena","Afrodescendencia","Discapacidad")) %>%
+  select(transversal, categoria, Hombre, Mujer) %>%
+  prepara_plot()
+
+plot2_data <- plot2_data %>% 
+  mutate(
+    transversal = factor(transversal,
+                        levels= c("Afrodescendencia", 
+                        "Autopercepción indígena","Discapacidad")),
+    sexo = factor(sexo,
+                  levels = c("Hombre", "Mujer"),
+      ),
+    categoria = factor(categoria,
+                  levels = c("No", "Si"))
+  )
+
+```
+
+
+g2: TNR promedio semanal por afrodescendencia, autopercepción indígena y discapacidad, en todos los casos segmentado por sexo
+
+```{r}
+#| label: g2
+#| warning: false
+#| message: false
+#| echo: false
+g2 <- ggplot(plot2_data,
+             aes(x = categoria,
+                 y = media,
+                 fill = sexo)) +
+
+  geom_col(position = position_dodge(width = 1.0),
+           width = 0.7) +
+            scale_y_continuous(
+              breaks = seq(0, 35, 5),
+              limits = c(0, 35),
+              expand = expansion(mult = c(0, 0.05))
+            )+
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(width = 1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+  aes(
+    label = gsub(" \\(", "\n(", valor),
+    y = ci_u + 1.5
+  ),
+  position = position_dodge(width = 1.0),
+  size = 2.5,
+  lineheight = 0.9
+  ) +
+
+  facet_wrap(~transversal, nrow = 1) +
+
+    scale_fill_manual(
+    values = c( pal_sexo
+    )
+  )+
+
+  labs(
+    y = "Horas semanales",
+    x = NULL,
+    fill = NULL
+  ) +
+  
+  theme_light() +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(
+      face = "bold",
+      color = "black")
+  )
+
+g2
+```
+
+
+```{r}
+#| label: exportar g2
+#| warning: false
+#| message: false
+#| include: false
+ggsave("graf2_TNR.png", plot = g2, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+```
+
+
+
+
+```{r}
+#| label: limpieza entorno
+#| warning: false
+#| message: false
+#| include: false
+rm(cuadro_simple, edad_resultados, n_total, prop_total, total_pob,
+tnr_bloque_general, tnr_general, tnr_zona,tnr_afro, tnr_etnia, tnr_discap, tnr_pobreza, tnr_medias_tabla,
+zona_plot, plot1_data, plot2_data,
+cuadro_simple_gt)
+```
+
+
+
+## Dependencia económica
+
+En este bloque vemos la dependencia económica usando la variable de 3 categorías:  
+- si  
+- no    
+- no calculable  
+
+Recordar que "No calculable" se le asignó a aquellas personas que tuvieron NA en reporte de ingresos de manera individual (ej, niños/adolescentes de 12 años y más que no reportaron ingresos, adultos sin reporte de ingresos)
+
+
+```{r}
+#| label: funcion multinomial por binaria 
+#| warning: false
+#| message: false
+#| include: false
+
+bloque_multinomial_bin <- function(
+  design,
+  var_multi,
+  etiqueta_var,
+  var_bin
+) {
+
+  # ---------------------------
+  # 1. Proporciones + IC95
+  # ---------------------------
+  prop_ci <- svyby(
+    as.formula(paste0("~", var_multi)),
+    as.formula(paste0("~", var_bin)),
+    design,
+    svymean,
+    na.rm = TRUE,
+    vartype = c("ci","se")
+  ) %>% 
+    as_tibble()
+
+  ## ---- PROPORCIONES ----
+  prop_long <- prop_ci %>%
+    pivot_longer(
+      cols = starts_with(var_multi),
+      names_to = "categoria",
+      values_to = "prop"
+    ) %>%
+    mutate(
+      categoria = gsub(paste0("^", var_multi), "", categoria),
+      categoria = gsub("^\\.", "", categoria)
+    )
+
+  ## ---- IC ----
+  ci_long <- prop_ci %>%
+    pivot_longer(
+      cols = starts_with(c("ci_l","ci_u")),
+      names_to = c("tipo","categoria"),
+      names_pattern="(ci_l|ci_u)\\.(.*)",
+      values_to="valor"
+    ) %>%
+    pivot_wider(names_from=tipo, values_from=valor) %>%
+    mutate(
+      categoria=gsub(paste0("^",var_multi),"",categoria),
+      categoria=gsub("^\\.","",categoria)
+    )
+  se_long <- prop_ci %>%
+    pivot_longer(
+      cols = starts_with("se."),
+      names_to = "categoria",
+      values_to = "se"
+    ) %>%
+    mutate(
+      categoria = gsub("^se\\.","",categoria),
+      categoria = gsub(paste0("^",var_multi),"",categoria),
+      categoria = gsub("^\\.","",categoria)
+    )
+
+  tabla_prop <- prop_long %>%
+    left_join(ci_long, by=c(var_bin,"categoria")) %>%
+    left_join(se_long, by=c(var_bin,"categoria")) %>%
+    mutate(
+      cv = (se / prop) * 100
+    )
+
+  # ---------------------------
+  # 2. n ponderada
+  # ---------------------------
+  tabla_n <- svyby(
+    as.formula(paste0("~", var_multi)),
+    as.formula(paste0("~", var_bin)),
+    design,
+    svytotal,
+    na.rm=TRUE
+  ) %>%
+    as_tibble() %>%
+    pivot_longer(
+      cols=starts_with(var_multi),
+      names_to="categoria",
+      values_to="n"
+    ) %>%
+    mutate(
+      categoria=gsub(paste0("^",var_multi),"",categoria),
+      categoria=gsub("^\\.","",categoria),
+      n=round(n,0)
+    )
+
+  # ---------------------------
+  # 3. Tabla final
+  # ---------------------------
+  tabla_final <- tabla_prop %>%
+    left_join(tabla_n, by=c(var_bin,"categoria")) %>%
+    mutate(
+      prop_ic = sprintf(
+        "%.1f%% (%.1f, %.1f)",
+        prop*100,
+        ci_l*100,
+        ci_u*100
+      ),
+      cv = sprintf("%.1f", cv)
+    ) %>%
+    select(
+      categoria,
+      !!sym(var_bin),
+      n,
+      prop_ic,
+      cv
+    ) %>%
+    pivot_wider(
+      names_from = !!sym(var_bin),
+      values_from = c(n, prop_ic, cv)
+    )
+
+  niveles_bin <- levels(design$variables[[var_bin]])
+  if(is.null(niveles_bin))
+    niveles_bin <- unique(design$variables[[var_bin]])
+
+  orden_cols <- unlist(
+    lapply(niveles_bin,
+           \(x) c(
+             paste0("n_",x),
+             paste0("prop_ic_",x),
+             paste0("cv_",x)
+           ))
+  )
+
+  tabla_final %>%
+    mutate(
+      Característica=paste(etiqueta_var,":",categoria)
+    ) %>%
+    relocate(Característica) %>%
+    select(Característica, all_of(orden_cols))
+}
+
+```
+
+
+
+
+
+```{r}
+#| label: calculo de dependencia general
+#| warning: false
+#| message: false
+#| include: false
+bloque_dep_eco <- bloque_multinomial_bin(
+  design = design_enigh_pob,
+  var_multi = "dep_eco_indiv",   
+  etiqueta_var = "Dependencia económica",
+  var_bin = "sexo_cat"    
+)
+```
+
+
+
+
+```{r}
+#| label: cuadro gt dependencia general
+#| warning: false
+#| message: false
+#| echo: false
+bloque_dep_eco_gt <- bloque_dep_eco %>%
+  select(Característica, n_Hombre, prop_ic_Hombre, n_Mujer, prop_ic_Mujer) %>% 
+  gt() %>%
+  tab_header(
+    title = "Dependencia económica",
+    subtitle = "Estimaciones ponderadas, ENIGH 2024 México"
+  ) %>%
+  tab_spanner(
+  label="Hombres",
+  columns=c(n_Hombre, prop_ic_Hombre)
+) %>%
+  tab_spanner(
+    label = "Mujeres",
+    columns = c(n_Mujer, prop_ic_Mujer)
+  ) %>%
+  cols_label(
+    Característica = "",
+    n_Hombre = "N",
+    prop_ic_Hombre = "% (IC95%)",
+    n_Mujer = "N",
+    prop_ic_Mujer = "% (IC95%)"
+  ) %>%
+  fmt_markdown(everything()) %>%
+  opt_table_outline() %>%
+  opt_all_caps(FALSE)
+
+bloque_dep_eco_gt
+```
+
+
+Recordar que la variable de dependencia económica es categórica por lo que aquí no se calculan medias, sino proporciones, por lo que la interpretación sería como sigue:  
+
+Ejemplo de lectura: En el caso de los hombres (de 12 años y más), un 67.6% no es dependiente económico, mientras que un 17.5% si lo es, además un 14.9% es indeterminado/no calculable ya que no reportó ingresos o valores para determinar su posible (o no) dependencia económica; en el caso de las mujeres...  
+
+
+
+
+### Dependencia económica por transversales
+
+```{r}
+#| label: funcion estratificar multinomial y homogenizar datos
+#| warning: false
+#| message: false
+#| include: false
+bloque_multinomial_bin_estrat <- function(
+  design,
+  var_multi,
+  var_bin,
+  var_transversal,
+  etiqueta_var
+) {
+
+  # niveles del estrato
+  niveles <- na.omit(
+    unique(design$variables[[var_transversal]])
+  )
+
+  resultados <- purrr::map_dfr(niveles, function(nivel) {
+
+    # subdiseño
+    des_sub <- subset(
+      design,
+      get(var_transversal) == nivel
+    )
+
+    # usar función base
+    tabla <- bloque_multinomial_bin(
+      design = des_sub,
+      var_multi = var_multi,
+      etiqueta_var = etiqueta_var,
+      var_bin = var_bin
+    )
+
+    # agregar info del estrato
+    tabla %>%
+      mutate(
+        transversal = var_transversal,
+        categoria_transversal = nivel,
+        .before = 1
+      )
+  })
+
+  return(resultados)
+}
+
+
+# funcion homogenizar datos de multinomial
+
+homogeniza_multinomial <- function(data, nombre_transversal){
+
+  data %>%
+    mutate(
+      transversal = nombre_transversal,
+
+      Hombre = paste0(
+        n_Hombre," (",prop_ic_Hombre,")"
+      ),
+
+      Mujer = paste0(
+        n_Mujer," (",prop_ic_Mujer,")"
+      ),
+
+      cv = paste0(
+        cv_Hombre," / ",cv_Mujer
+      )
+    ) %>%
+    select(
+      transversal,
+      categoria_transversal,
+      Característica,
+      Hombre,
+      Mujer,
+      cv
+    ) %>%
+    rename(categoria=categoria_transversal)
+}
+
+```
+
+
+
+
+```{r}
+#| label: estratificación dep eco
+#| warning: false
+#| message: false
+#| include: false
+dep_zona <- bloque_multinomial_bin_estrat(
+  design = design_enigh_pob,
+  var_multi = "dep_eco_indiv",
+  var_bin = "sexo_cat",
+  var_transversal = "zona_cat",
+  etiqueta_var = "Dependencia económica"
+)
+
+dep_etnia <- bloque_multinomial_bin_estrat(
+  design = design_enigh_pob,
+  var_multi = "dep_eco_indiv",
+  var_bin = "sexo_cat",
+  var_transversal = "etnia_cat",
+  etiqueta_var = "Dependencia económica"
+)
+
+dep_afro <- bloque_multinomial_bin_estrat(
+  design = design_enigh_pob,
+  var_multi = "dep_eco_indiv",
+  var_bin = "sexo_cat",
+  var_transversal = "afrod_cat",
+  etiqueta_var = "Dependencia económica"
+)
+
+dep_discap <- bloque_multinomial_bin_estrat(
+  design = design_enigh_pob,
+  var_multi = "dep_eco_indiv",
+  var_bin = "sexo_cat",
+  var_transversal = "discapacidad_gral",
+  etiqueta_var = "Dependencia económica"
+)
+
+
+# homogenizar datos dep economica estratificados
+
+dep_eco_tabla_tran <- bind_rows(
+  homogeniza_multinomial(dep_zona,    "Zona"),
+  homogeniza_multinomial(dep_etnia,   "Autopercepción indígena"),
+  homogeniza_multinomial(dep_afro,    "Afrodescendencia"),
+  homogeniza_multinomial(dep_discap,  "Discapacidad")
+)
+
+
+```
+
+
+
+Las estratificaciones en este bloque permiten una generalización confiable al universo de estudio en todos sus niveles de desagregación
+
+
+```{r}
+#| label: cuadro gt dep eco por transversales
+#| warning: false
+#| message: false
+#| echo: false
+dep_eco_tabla_tran_gt <- dep_eco_tabla_tran %>%
+  select(transversal, categoria, Característica, Hombre, Mujer) %>% 
+  gt(groupname_col = "transversal") %>%
+  tab_header(
+    title = "Dependencia económica por variables transversales ",
+  ) %>%
+  cols_label(
+    transversal = "Transversal",
+    categoria = "",
+    Característica = "Categoría",
+    Hombre = "Hombre\nN % (IC95%)",
+    Mujer = "Mujer\nN % (IC95%)"
+  )
+dep_eco_tabla_tran_gt
+```
+
+Ejemplo de lectura:  
+Para los hombres de zona urbana, se estima que un 15.7% (IC95% 15.3-16.2) se encuentran en condición de dependencia económica mientras que un 69% (IC95% 68.5-69.5) no lo están; existe además un 15.2% (IC95% 14.8-15.6) a los que no fue posible catalogar como dependientes/no dependientes por falta de información para categorizarlos. En el caso de las mujeres...
+
+
+
+```{r}
+#| label: funcion extraccion datos grafico 1 dep eco
+#| warning: false
+#| message: false
+#| include: false
+extrae_ic <- function(x){
+
+  prop <- as.numeric(sub("%.*", "", x))
+
+  ci_l <- as.numeric(sub(".*\\(([^,]+),.*", "\\1", x))
+  ci_u <- as.numeric(sub(".*, ([^)]+)\\)", "\\1", x))
+
+  tibble(prop, ci_l, ci_u)
+}
+
+```
+
+
+
+```{r}
+#| label: extraer datos bloque general dep eco
+#| warning: false
+#| message: false
+#| include: false
+# Preparar bloque general
+dep_general_plot <- bloque_dep_eco %>%
+  mutate(
+    categoria = sub("Dependencia económica : ", "", Característica)
+  ) %>%
+
+  bind_cols(extrae_ic(.$prop_ic_Hombre)) %>%
+  rename(prop_H = prop, ci_l_H = ci_l, ci_u_H = ci_u) %>%
+
+  bind_cols(extrae_ic(.$prop_ic_Mujer)) %>%
+  rename(prop_M = prop, ci_l_M = ci_l, ci_u_M = ci_u)
+
+dep_general_plot <- dep_general_plot %>%
+  pivot_longer(
+    cols = c(prop_H, prop_M,
+             ci_l_H, ci_l_M,
+             ci_u_H, ci_u_M),
+    names_to = c(".value","sexo"),
+    names_pattern="(prop|ci_l|ci_u)_(H|M)"
+  ) %>%
+  mutate(
+    sexo = recode(sexo,
+                  H = "Hombre",
+                  M = "Mujer"),
+    facet = "General"
+  )
+
+# Preparar bloque de zona
+  dep_zona_plot <- dep_zona %>%
+  mutate(
+    categoria = sub("Dependencia económica : ", "", Característica)
+  ) %>%
+
+  bind_cols(extrae_ic(.$prop_ic_Hombre)) %>%
+  rename(prop_H = prop, ci_l_H = ci_l, ci_u_H = ci_u) %>%
+
+  bind_cols(extrae_ic(.$prop_ic_Mujer)) %>%
+  rename(prop_M = prop, ci_l_M = ci_l, ci_u_M = ci_u)
+
+dep_zona_plot <- dep_zona_plot %>%
+  pivot_longer(
+    cols = c(prop_H, prop_M,
+             ci_l_H, ci_l_M,
+             ci_u_H, ci_u_M),
+    names_to = c(".value","sexo"),
+    names_pattern="(prop|ci_l|ci_u)_(H|M)"
+  ) %>%
+  mutate(
+  sexo = recode(sexo,
+                H="Hombre",
+                M="Mujer"),
+  facet = categoria_transversal
+  )
+
+
+# Union datos 
+plot_dep_g1 <- bind_rows(
+  dep_general_plot,
+  dep_zona_plot
+)
+
+plot_dep_g1 <- plot_dep_g1 %>%
+  mutate(
+    sexo = factor(sexo, levels=c("Hombre","Mujer")),
+    facet = factor(
+      facet,
+      levels = c("General","Urbano", "Rural")
+    ),
+    categoria = factor(
+      categoria,
+      levels=c("No","Si","No calculable")
+      ),
+    etiqueta = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop, ci_l, ci_u
+    )
+  )
+```
+
+  
+  
+
+g3: dependencia económica general (solo por sexo) y dependencia por zona urbana y rural, por sexo en ambos casos; eje X dependencia económica
+
+
+```{r}
+#| label: grafico 1 dep eco
+#| warning: false
+#| message: false
+#| echo: false
+g3 <- ggplot(
+  plot_dep_g1,
+  aes(x=categoria, y=prop, fill=sexo)
+) +
+
+  geom_col(
+    position=position_dodge(1.0),
+    width=0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin=ci_l, ymax=ci_u),
+    position=position_dodge(1.0),
+    width=0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+  aes(
+    label = gsub(" \\(", "\n(", etiqueta),
+    y = ci_u + 3
+  ),
+  position = position_dodge(1.0),
+  size = 2.1,
+  lineheight = 0.9
+  ) +
+
+  facet_wrap(~facet, scales="free_x") +
+
+  scale_fill_manual(values=pal_sexo) +
+
+  labs(
+    y="Proporción (%)",
+    x=NULL,
+    fill=NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position="top",
+    strip.text = element_text(
+      face = "bold",
+      color = "black")
+  )
+
+g3
+
+ggsave("graf1_dep_eco.png", plot = g3, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+```
+
+
+
+```{r}
+#| label: extraccion datos graf 2 dep eco
+#| warning: false
+#| message: false
+#| include: false
+extrae_ic_tabla <- function(x){
+
+  prop <- as.numeric(sub(".*\\(([^%]+)%.*", "\\1", x))
+  ci_l <- as.numeric(sub(".*\\(([^,]+),.*", "\\1", x))
+  ci_u <- as.numeric(sub(".*, ([^)]+)\\).*", "\\1", x))
+
+  tibble(prop, ci_l, ci_u)
+}
+```
+
+
+```{r}
+#| label: seleccion datos graf 2 dep eco
+#| warning: false
+#| message: false
+#| include: false
+plot_dep_g2 <- dep_eco_tabla_tran %>%
+  mutate(
+   transversal = factor(transversal,
+      levels = (c("Afrodescendencia",
+    "Autopercepción indígena",
+    "Discapacidad"))
+    )) %>% 
+  filter(
+    transversal %in% c(
+      "Autopercepción indígena",
+      "Afrodescendencia",
+      "Discapacidad"
+    )
+  ) %>%
+  mutate(
+    categoria_dep = sub(
+      "Dependencia económica : ",
+      "",
+      Característica
+    )
+  ) %>%
+
+  bind_cols(extrae_ic_tabla(.$Hombre)) %>%
+  rename(prop_H = prop, ci_l_H = ci_l, ci_u_H = ci_u) %>%
+
+  bind_cols(extrae_ic_tabla(.$Mujer)) %>%
+  rename(prop_M = prop, ci_l_M = ci_l, ci_u_M = ci_u)
+
+plot_dep_g2 <- plot_dep_g2 %>%
+  pivot_longer(
+    cols = c(prop_H, prop_M,
+             ci_l_H, ci_l_M,
+             ci_u_H, ci_u_M),
+    names_to = c(".value","sexo"),
+    names_pattern="(prop|ci_l|ci_u)_(H|M)"
+  ) %>%
+  mutate(
+    sexo = recode(sexo,
+                  H="Hombre",
+                  M="Mujer"),
+
+    categoria_dep = factor(
+      categoria_dep,
+      levels=c("No","Si","No calculable")
+    ),
+
+    sexo = factor(sexo,
+                  levels=c("Hombre","Mujer")),
+
+    etiqueta = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop, ci_l, ci_u
+    )
+  )
+
+```
+
+
+g4: dependencia económica únicamente en grupos "si" (si es afrodescendiente, si se percibe indígena, si tiene discapacidad) por sexo en todos los casos; eje X dependencia económica
+
+```{r}
+#| label: graf 2 dep economica 
+#| warning: false
+#| message: false
+#| echo: false
+g4 <- ggplot(
+  plot_dep_g2,
+  aes(x=categoria_dep, y=prop, fill=sexo)
+) +
+
+  geom_col(
+    position=position_dodge(1.0),
+    width=0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin=ci_l, ymax=ci_u),
+    position=position_dodge(1.0),
+    width=0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(label=gsub(" \\(", "\n(", etiqueta),
+        y=ci_u+ 3),
+    position=position_dodge(1.0),
+    size=1.8,
+    lineheight= 0.9,
+    vjust = 0.2
+  ) +
+
+  facet_grid(categoria ~ transversal) +
+
+  scale_fill_manual(values=pal_sexo) +
+  
+  scale_y_continuous(expand = expansion(mult = c(0, .12)))+
+
+  labs(
+    y="Proporción (%)",
+    x=NULL,
+    fill=NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position="top",
+    strip.text = element_text(
+      face = "bold",
+      color = "black")
+  )
+
+g4
+
+ggsave("graf2_dep_eco.png", plot = g4, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+
+
+```
+
+
+
+
+
+## Tipo jefatura
+
+El análisis de esta variable se realizó considerando la estructura de convivencia en el hogar del jef@ de hogar con hijos residentes y la presencia/ausencia del padre/madre contraparte de dichos hijos; por lo que aquellos jefes de hogar uniparentales (viven solos), o jefes de hogares extendidos donde puede haber otros dependientes (ej. padres adultos mayores, familiares menores, familia extendida, etc) quedan fuera de este análisis.
+
+
+```{r}
+#| label: diseño a nivel hogar
+#| warning: false
+#| message: false
+#| include: false
+
+design_enigh_hog <- svydesign(
+  ids = ~upm, 
+  strata = ~est_dis, 
+  weights = ~factor_hog,
+  data = fem_pob,
+  nest = TRUE
+)
+options(survey.lonely.psu = "adjust")
+
+```
+
+
+
+```{r}
+#| label: subset jefes
+#| warning: false
+#| message: false
+#| include: false
+# dejamos un set de datos solo con los jefes que tuvieron hijos residentes
+subset_jefes <- subset(design_enigh_hog, !is.na(parentalidad))
+```
+
+
+
+
+```{r}
+#| label: funcion bloque general binaria
+#| warning: false
+#| message: false
+#| include: false
+
+bloque_general_binaria <- function(
+  design,
+  var_bin,
+  var_grupo,
+  etiqueta
+){
+
+  f_bin   <- as.formula(paste0("~", var_bin))
+  f_group <- as.formula(paste0("~", var_grupo))
+
+  # =====================================================
+  # 1. PROPORCIONES + IC + SE
+  # =====================================================
+  prop <- svyby(
+    f_bin,
+    f_group,
+    design,
+    svymean,
+    vartype = c("ci","se"),
+    na.rm = TRUE
+  ) %>%
+    as_tibble()
+
+  ## ---- proporciones largo
+  prop_long <- prop %>%
+    pivot_longer(
+      cols = starts_with(var_bin),
+      names_to = "categoria",
+      values_to = "prop"
+    ) %>%
+    mutate(
+      categoria = sub(paste0(var_bin), "", categoria),
+      categoria = sub("^\\.", "", categoria)
+    )
+
+  ## ---- IC
+  ci_long <- prop %>%
+    pivot_longer(
+      cols = matches("^ci_[lu]\\."),
+      names_to = c("tipo","categoria"),
+      names_pattern = "^(ci_[lu])\\.(.*)",
+      values_to = "valor"
+    ) %>%
+    pivot_wider(
+      names_from = tipo,
+      values_from = valor
+    ) %>%
+    mutate(
+      categoria = sub(paste0(var_bin), "", categoria),
+      categoria = sub("^\\.", "", categoria)
+    )
+
+  ## ---- SE
+  se_long <- prop %>%
+    pivot_longer(
+      cols = starts_with("se."),
+      names_to = "categoria",
+      values_to = "se"
+    ) %>%
+    mutate(
+      categoria = sub("se\\.", "", categoria),
+      categoria = sub(paste0(var_bin), "", categoria),
+      categoria = sub("^\\.", "", categoria)
+    )
+
+  # =====================================================
+  # 2. N PONDERADA
+  # =====================================================
+  n_pond <- svyby(
+    f_bin,
+    f_group,
+    design,
+    svytotal,
+    na.rm = TRUE
+  ) %>%
+    as_tibble()
+
+  n_long <- n_pond %>%
+    pivot_longer(
+      cols = starts_with(var_bin),
+      names_to = "categoria",
+      values_to = "n_pond"
+    ) %>%
+    mutate(
+      categoria = sub(paste0(var_bin), "", categoria),
+      categoria = sub("^\\.", "", categoria)
+    )
+
+  # =====================================================
+  # 3. UNIR TODO
+  # =====================================================
+  final <- prop_long %>%
+    left_join(ci_long, by = c(var_grupo,"categoria")) %>%
+    left_join(se_long, by = c(var_grupo,"categoria")) %>%
+    left_join(n_long, by = c(var_grupo,"categoria")) %>%
+    mutate(
+      cv = (se / prop) * 100,
+      variable = etiqueta
+    ) %>%
+    rename(
+      grupo = !!sym(var_grupo)
+    )
+
+  return(final)
+}
+```
+
+
+
+
+```{r}
+#| label: tipo jefatura general
+#| warning: false
+#| message: false
+#| include: false
+bloque_jefatura <- bloque_general_binaria(
+  design_enigh_hog,
+  var_bin = "parentalidad",
+  var_grupo = "sexo_cat",
+  etiqueta = "Tipo jefatura"
+)
+```
+
+
+
+```{r}
+#| label: cuadro gt jefatura general
+#| warning: false
+#| message: false
+#| echo: false
+jefatura_plot <- bloque_jefatura %>%
+  mutate(porc = prop * 100)
+
+jefatura_gt <- jefatura_plot %>%
+  mutate(
+    prop_ic = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop*100,
+      ci_l*100,
+      ci_u*100
+    ),
+    cv = round(cv, 2)   # ← AQUÍ
+  ) %>%
+  select(variable, categoria, grupo, n_pond, prop_ic) %>%
+  pivot_wider(
+    names_from = grupo,
+    values_from = c(n_pond, prop_ic)
+  )
+
+jefatura_gt <- jefatura_gt %>% 
+    select(variable, categoria, n_pond_Hombre, prop_ic_Hombre,
+    n_pond_Mujer, prop_ic_Mujer) %>%
+  gt() %>%
+  tab_header(
+    title = "Tipo de jefatura en los hogares",
+    subtitle = "Estimaciones ponderadas, ENIGH 2024 México"
+  ) %>%
+  tab_spanner(
+    label = "Hogares con jefatura de Hombres",
+    columns = c(n_pond_Hombre, prop_ic_Hombre)
+  ) %>%
+  tab_spanner(
+    label = "Hogares con jefatura de Mujeres",
+    columns = c(n_pond_Mujer, prop_ic_Mujer)
+  ) %>%
+  cols_label(
+    variable = "",
+    categoria = "Parentalidad",
+    n_pond_Hombre = "N",
+    prop_ic_Hombre = "% (IC95%)",
+    n_pond_Mujer = "N",
+    prop_ic_Mujer = "% (IC95%)"
+  ) %>% 
+  fmt_markdown(everything()) %>%
+  opt_table_outline() %>%
+  opt_all_caps(FALSE)
+
+jefatura_gt
+
+```
+
+
+Ejemplo de lectura: se estimó que en aquellos hogares donde hubo hijos residentes y la jefatura de hogar fue de sexo masculino, alredor de 16.05 millones de hogares (92.5%) presentaron una estructura de convivencia biparental mientras que alrededor de 1.3 millones de hogares (7.5%)  presentaron una estructura de convivencia uniparental...
+
+
+
+
+
+### Transversales en jefatura
+
+```{r}
+#| label: función para estratificar binarias y homogenizar datos
+#| warning: false
+#| message: false
+#| include: false
+
+estratificar_binaria_cv <- function(
+  design,
+  var_bin,
+  var_trans,
+  etiqueta
+){
+
+  f_bin   <- as.formula(paste0("~", var_bin))
+  f_group <- as.formula(
+    paste0("~ sexo_cat + ", var_trans)
+  )
+
+  # ----------------------------
+  # Proporciones + IC + SE
+  # ----------------------------
+  res <- svyby(
+    f_bin,
+    f_group,
+    design,
+    svymean,
+    vartype = c("ci","se"),
+    na.rm = TRUE
+  ) %>%
+    as_tibble()
+
+  # ----------------------------
+  # reshape proporciones
+  # ----------------------------
+  prop_long <- res %>%
+    pivot_longer(
+      cols = starts_with(var_bin),
+      names_to = "categoria",
+      values_to = "prop"
+    ) %>%
+    mutate(
+      categoria = sub(paste0(var_bin), "", categoria),
+      categoria = sub("^\\.", "", categoria)
+    )
+
+  # ----------------------------
+  # IC
+  # ----------------------------
+  ci_long <- res %>%
+    pivot_longer(
+      cols = matches("^ci_[lu]\\."),
+      names_to = c("tipo","categoria"),
+      names_pattern = "^(ci_[lu])\\.(.*)",
+      values_to = "valor"
+    ) %>%
+    pivot_wider(
+      names_from = tipo,
+      values_from = valor
+    ) %>%
+    mutate(
+      categoria = sub(paste0(var_bin), "", categoria),
+      categoria = sub("^\\.", "", categoria)
+    )
+
+  # ----------------------------
+  # SE
+  # ----------------------------
+  se_long <- res %>%
+    pivot_longer(
+      cols = starts_with("se."),
+      names_to = "categoria",
+      values_to = "se"
+    ) %>%
+    mutate(
+      categoria = sub("se\\.", "", categoria),
+      categoria = sub(paste0(var_bin), "", categoria),
+      categoria = sub("^\\.", "", categoria)
+    )
+
+  # ----------------------------
+  # n ponderada REAL
+  # ----------------------------
+  n_tab <- svyby(
+    f_bin,
+    f_group,
+    design,
+    svytotal,
+    na.rm = TRUE
+  ) %>%
+    as_tibble() %>%
+    pivot_longer(
+      cols = starts_with(var_bin),
+      names_to = "categoria",
+      values_to = "n_pond"
+    ) %>%
+    mutate(
+      categoria = sub(paste0(var_bin), "", categoria),
+      categoria = sub("^\\.", "", categoria)
+    )
+
+  # ----------------------------
+  # unir todo
+  # ----------------------------
+  final <- prop_long %>%
+    left_join(ci_long,
+              by = c("sexo_cat", var_trans, "categoria")) %>%
+    left_join(se_long,
+              by = c("sexo_cat", var_trans, "categoria")) %>%
+    left_join(n_tab,
+              by = c("sexo_cat", var_trans, "categoria")) %>%
+    mutate(
+      cv = (se / prop) * 100,
+      variable = etiqueta
+    )
+
+  return(final)
+}
+
+homogenizar_binaria <- function(df, var_trans){
+  df %>%
+    transmute(
+      variable,
+      transversal = var_trans,          # ← nombre de la variable
+      nivel = .data[[var_trans]],       # ← nivel del estrato
+      sexo_cat,
+      categoria,
+      n_pond,
+      prop,
+      ci_l,
+      ci_u,
+      cv
+    ) %>%
+    arrange(variable, transversal, nivel, sexo_cat, categoria)
+}
+
+
+```
+
+
+
+
+```{r}
+#| label: estratificacion de jefaturas
+#| warning: false
+#| message: false
+#| include: false
+bloque_jefatura_zona <- estratificar_binaria_cv(
+  subset_jefes,
+  "parentalidad",
+  "zona_cat",
+  "Tipo jefatura"
+)
+bloque_jefatura_etnia <- estratificar_binaria_cv(
+  subset_jefes,
+  "parentalidad",
+  "etnia_cat",
+  "Tipo jefatura"
+)
+
+bloque_jefatura_afro <- estratificar_binaria_cv(
+  subset_jefes,
+  "parentalidad",
+  "afrod_cat",
+  "Tipo jefatura"
+)
+
+bloque_jefatura_discap <- estratificar_binaria_cv(
+  subset_jefes,
+  "parentalidad",
+  "discapacidad_gral",
+  "Tipo jefatura"
+)
+
+bloque_jefatura_pobreza <- estratificar_binaria_cv(
+  subset_jefes,
+  "parentalidad",
+  "pobreza_cat",
+  "Tipo jefatura"
+)
+
+jefatura_estratif <- bind_rows(
+    homogenizar_binaria(bloque_jefatura_zona, "zona_cat"),
+    homogenizar_binaria(bloque_jefatura_etnia, "etnia_cat"),
+    homogenizar_binaria(bloque_jefatura_afro, "afrod_cat"), 
+    homogenizar_binaria(bloque_jefatura_discap, "discapacidad_gral"), 
+    homogenizar_binaria(bloque_jefatura_pobreza, "pobreza_cat")
+)
+
+
+```
+
+
+Las desagregaciones (algunas de las combinaciones/segmentaciones) para afrodescendencia tienen una capacidad de generalización limitada y deben ser consideradas como tendencias, no como valores concluyentes
+
+
+```{r}
+#| label: cuadro gt jefatura por transversales
+#| warning: false
+#| message: false
+#| echo: false
+
+jefatura_estratif_gt <- jefatura_estratif %>%
+  mutate(
+    prop_pct = prop * 100,
+    ci_l_pct = ci_l * 100,
+    ci_u_pct = ci_u * 100,
+    prop_ic = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop_pct,
+      ci_l_pct,
+      ci_u_pct
+    ),
+    n_pond = round(n_pond),
+    cv = round(cv, 2)
+  )
+
+jefatura_estratif_gt <- jefatura_estratif_gt %>%
+  select(
+  variable,
+  transversal,
+  nivel,
+  categoria,
+  sexo_cat,
+  n_pond,
+  prop_ic
+ ) %>%
+  pivot_wider(
+    names_from = sexo_cat,
+    values_from = c(n_pond, prop_ic),
+    names_glue = "{.value}_{sexo_cat}"
+  )
+
+jefatura_estratif_gt <- jefatura_estratif_gt %>%
+  mutate(
+    transversal = dplyr::recode(
+      transversal,
+      "zona_cat" = "Zona",
+      "etnia_cat" = "Autopercepción indígena",
+      "afrod_cat" = "Afrodescendencia",
+      "discapacidad_gral" = "Discapacidad",
+      "pobreza_cat" = "Pobreza"
+    )
+  )
+
+jefatura_estratif_gt %>%
+  gt(groupname_col = "transversal") %>%
+  cols_label(
+    nivel = "Transversal",
+    categoria = "Tipo de jefatura",
+    n_pond_Hombre = "N",
+    prop_ic_Hombre = "% (IC95%)",
+    n_pond_Mujer = "N",
+    prop_ic_Mujer = "% (IC95%)"
+  ) %>%  
+  tab_spanner(
+    label = "Hogares con jefatura de Hombres",
+    columns = ends_with("_Hombre")
+  ) %>%
+  
+  tab_spanner(
+    label = "Hogares con jefatura de Mujeres",
+    columns = ends_with("_Mujer")
+  ) %>%
+  cols_align(align = "center") 
+
+```
+
+
+Ejemplo de lectura: Para los hogares (donde existe la estructura de hijos residentes y jef@ de hogar) en entornos urbanos, en aquellos casos que la jefatura fue del sexo masculino, un 91.9% (IC95% 91.4-92.4) mostró estructura biparental, mientras que un 8.1% fue uniparental; en el caso de los hogares urbanos donde la jefatura fue del sexo femenino, se estimó que en 19% de los casos la estructura fue biparental mientras que en un 81% fue uniparental....
+
+
+
+
+
+```{r}
+#| label: datos base graficos jefatura
+#| warning: false
+#| message: false
+#| include: false
+
+# =====================================================
+# 1. BLOQUE GENERAL
+# =====================================================
+
+plot_jef_general <- bloque_jefatura %>%
+  mutate(
+    prop = prop * 100,
+    ci_l = ci_l * 100,
+    ci_u = ci_u * 100,
+
+    sexo = factor(grupo,
+                  levels = c("Hombre","Mujer")),
+
+    transversal = "General",
+    nivel = "General",
+
+    etiqueta = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop, ci_l, ci_u
+    )
+  )
+
+
+# =====================================================
+# 2. BLOQUE ESTRATIFICADO BASE
+# =====================================================
+
+plot_jefatura <- jefatura_estratif %>%
+  mutate(
+    prop = prop * 100,
+    ci_l = ci_l * 100,
+    ci_u = ci_u * 100,
+
+    sexo = factor(
+      sexo_cat,
+      levels = c("Hombre","Mujer")
+    ),
+
+    etiqueta = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop, ci_l, ci_u
+    )
+  )
+
+
+# =====================================================
+# 3. GRAFICO 1 → GENERAL + ZONA
+# =====================================================
+
+plot_jef_zona <- plot_jefatura %>%
+  filter(transversal == "zona_cat")
+
+plot_jef_g1 <- bind_rows(
+  plot_jef_general,
+  plot_jef_zona
+) %>%
+  mutate(
+    facet = factor(case_when(
+      transversal == "General" ~ "General",
+      TRUE ~  nivel
+    ),
+    levels = c("General", "Urbano", "Rural"))
+  )
+
+
+# =====================================================
+# 4. GRAFICO 2 
+# =====================================================
+
+plot_jef_g2 <- plot_jefatura %>%
+  filter(
+    transversal %in% c(
+      "etnia_cat",
+      "afrod_cat",
+      "discapacidad_gral"
+    )
+  ) %>%
+  mutate(
+    transversal = factor(
+      recode(
+      transversal,
+      etnia_cat = "Autopercepción indígena",
+      afrod_cat = "Afrodescendencia",
+      discapacidad_gral = "Discapacidad"),
+      levels = (c("Afrodescendencia",
+    "Autopercepción indígena",
+    "Discapacidad"))
+    ),
+    categoria = factor(
+      categoria,
+      levels = c("Biparental","Uniparental")
+    )
+  )
+
+
+# =====================================================
+# 5. GRAFICO 3 → POBREZA
+# =====================================================
+
+plot_jef_g3 <- plot_jefatura %>%
+  filter(transversal == "pobreza_cat") %>%
+  mutate(
+    nivel = factor(
+      nivel,
+      levels = c("No pobre por ingresos","Pobreza por ingresos", "Pobreza extrema")
+    ),
+    facet = nivel
+  )
+```
+
+
+g5: hogares con hijos residentes y tipo de parentalidad (uni/biparental) por sexo de jefe del hogar, de forma general (solo por sexo del jefe) y por zona urbano/rural conservando segementación por sexo; eje X tipo de parentalidad/ convivencia delos padres
+
+
+```{r}
+#| label: grafico 1 jefatura
+#| warning: false
+#| message: false
+#| echo: false
+
+g5 <- ggplot(
+  plot_jef_g1,
+  aes(x = categoria, y = prop, fill = sexo)
+) +
+
+  geom_col(
+    position = position_dodge(1.0),
+    width = 0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(
+      label = gsub(" \\(", "\n(", etiqueta),
+      y = ci_u + 3
+    ),
+    position = position_dodge(1.0),
+    size = 2.3,
+    lineheight = 0.9
+  ) +
+
+  facet_wrap(~facet, scales = "free_x") +
+
+  scale_fill_manual(values = pal_sexo) +
+
+  labs(
+    y = "Proporción (%)",
+    x = NULL,
+    fill = NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+g5
+
+ggsave("graf1_jefatura.png", plot = g5, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+```
+
+
+
+g6: hogares con hijos residentes y tipo de parentalidad (uni/biparental) en los grupos de afrodescendencia, etnia, discapciadad, conservando segementación por sexo del jefe; eje X tipo de parentalidad/ convivencia de los padres
+
+```{r}
+#| label: grafico 2 jefatura
+#| warning: false
+#| message: false
+#| echo: false
+
+g6 <- ggplot(
+  plot_jef_g2,
+  aes(x = categoria, y = prop, fill = sexo)
+) +
+
+  geom_col(
+    position = position_dodge(1.0),
+    width = 0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(
+      label = gsub(" \\(", "\n(", etiqueta),
+      y = ci_u + 3
+    ),
+    position = position_dodge(1.0),
+    size = 1.5,
+    lineheight = 0.9,
+    vjust = 0.2
+  ) +
+
+  facet_grid(nivel ~ transversal) +
+
+  scale_fill_manual(values = pal_sexo) +
+
+  scale_y_continuous(expand = expansion(mult = c(0, .12)))+
+
+  labs(
+    y = "Proporción (%)",
+    x = NULL,
+    fill = NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+g6
+
+ggsave("graf2_jefatura.png", plot = g6, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+```
+
+
+g7: hogares con hijos residentes y tipo de parentalidad (uni/biparental) en los grupos de pobreza, conservando segmentación por sexo del jefe; eje X tipo de parentalidad/ convivencia de los padres
+
+
+```{r}
+#| label: grafico 3 jefatura
+#| warning: false
+#| message: false
+#| echo: false
+g7 <- ggplot(
+  plot_jef_g3,
+  aes(x = categoria, y = prop, fill = sexo)
+) +
+
+  geom_col(
+    position = position_dodge(1.0),
+    width = 0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(
+      label = gsub(" \\(", "\n(", etiqueta),
+      y = ci_u + 3
+    ),
+    position = position_dodge(1.0),
+    size = 2.3,
+    lineheight = 0.9,
+    vjust = 0.2
+  ) +
+
+  facet_wrap(~facet) +
+
+  scale_fill_manual(values = pal_sexo) +
+
+  labs(
+    y = "Proporción (%)",
+    x = NULL,
+    fill = NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+g7
+
+ggsave("graf3_jefatura.png", plot = g7, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+```
+
+
+
+```{r}
+#| label: limpieza entorno 2
+#| warning: false
+#| message: false
+#| include: false
+
+rm(bloque_dep_eco, dep_afro, dep_discap, dep_etnia, dep_zona, dep_zona_plot, dep_general_plot,
+bloque_jefatura, bloque_jefatura_afro, bloque_jefatura_discap, bloque_jefatura_etnia, bloque_jefatura_zona, bloque_jefatura_pobreza, dep_eco_tabla_tran, jefatura_estratif, jefatura_estratif_gt, jefatura_plot, 
+plot_jef_g1, plot_jef_g2, plot_jef_g3, plot_jef_general, plot_jef_zona, plot_jefatura)
+```
+
+
+
+## Acceso financiero por hogar
+
+
+Recordar que el acceso financiero se construyo para el hogar (información disponible a nivel de hogar, no de persona) por lo que para determinar el acceso por sexo se considera sólo a los jef@s de hogar (sexo del jefe); asumiendo que al ser el lider del hogar tiene/no tiene, acceso al servicio financiero.  
+Este análisis incluye a todos los jef@s de hogar (no solo los que tienen hijos residentes, todos)
+
+
+```{r}
+#| label: proporciones financiera jefaturas
+#| warning: false
+#| message: false
+#| include: false
+
+# Restringimos el diseño a todos lo jefes (no solo los que tienen hijos residentes)
+subset_jefes_todos <- subset(design_enigh_hog, (parentesco_cat == "Jefe"))
+
+
+
+bloque_finan_jefes <- bloque_general_binaria(
+  design = subset_jefes_todos,
+  var_bin = "acceso_financiero_hogar",
+  var_grupo = "sexo_jefe_cat",
+  etiqueta = "Acceso financiero"
+)
+
+
+bloque_finan_jefes
+```
+
+
+
+
+```{r}
+#| label: cuadro gt finanzas jefes general
+#| warning: false
+#| message: false
+#| echo: false
+finanzas_plot <- bloque_finan_jefes %>%
+  mutate(porc = prop * 100)
+
+finanzas_gt <- finanzas_plot %>%
+  mutate(
+    prop_ic = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop*100,
+      ci_l*100,
+      ci_u*100
+    ),
+    cv = round(cv, 2)   # ← AQUÍ
+  ) %>%
+  select(variable, categoria, grupo, n_pond, prop_ic) %>%
+  pivot_wider(
+    names_from = grupo,
+    values_from = c(n_pond, prop_ic)
+  )
+
+finanzas_gt <- finanzas_gt %>% 
+    select(variable, categoria, n_pond_Hombre, prop_ic_Hombre,
+    n_pond_Mujer, prop_ic_Mujer) %>%
+  gt() %>%
+  tab_header(
+    title = "Acceso financiero en los hogares por sexo del jef@",
+    subtitle = "Estimaciones ponderadas, ENIGH 2024 México"
+  ) %>%
+  tab_spanner(
+    label = "Hogares con jefatura de Hombres",
+    columns = c(n_pond_Hombre, prop_ic_Hombre)
+  ) %>%
+  tab_spanner(
+    label = "Hogares con jefatura de Mujeres",
+    columns = c(n_pond_Mujer, prop_ic_Mujer)
+  ) %>%
+  cols_label(
+    variable = "",
+    categoria = "Categoría",
+    n_pond_Hombre = "N",
+    prop_ic_Hombre = "% (IC95%)",
+    n_pond_Mujer = "N",
+    prop_ic_Mujer = "% (IC95%)"
+  ) %>% 
+  fmt_markdown(everything()) %>%
+  opt_table_outline() %>%
+  opt_all_caps(FALSE)
+
+finanzas_gt
+
+```
+
+Ejemplo de lectura: Se estimo que en los hogares con jefatura de sexo masculino, un 69.5% de dicho hogares no cuenta con acceso a servicios financieros mientras que un 30.5% si tiene acceso, en el caso de hogares con jefatura femenina...
+
+
+
+
+### Transversales en acceso financiero
+
+
+```{r}
+#| label: estratificacion de acceso financiero
+#| warning: false
+#| message: false
+#| include: false
+bloque_finan_zona <- estratificar_binaria_cv(
+  subset_jefes_todos,
+  "acceso_financiero_hogar",
+  "zona_cat",
+  "Acceso financiero"
+)
+bloque_finan_etnia <- estratificar_binaria_cv(
+  subset_jefes_todos,
+  "acceso_financiero_hogar",
+  "etnia_cat",
+  "Acceso financiero"
+)
+
+bloque_finan_afro <- estratificar_binaria_cv(
+  subset_jefes_todos,
+  "acceso_financiero_hogar",
+  "afrod_cat",
+  "Acceso financiero"
+)
+
+bloque_finan_discap <- estratificar_binaria_cv(
+  subset_jefes_todos,
+  "acceso_financiero_hogar",
+  "discapacidad_gral",
+  "Acceso financiero"
+)
+
+bloque_finan_pobreza <- estratificar_binaria_cv(
+  subset_jefes_todos,
+  "acceso_financiero_hogar",
+  "pobreza_cat",
+  "Acceso financiero"
+)
+
+finan_estratif <- bind_rows(
+    homogenizar_binaria(bloque_finan_zona, "zona_cat"),
+    homogenizar_binaria(bloque_finan_etnia, "etnia_cat"),
+    homogenizar_binaria(bloque_finan_afro, "afrod_cat"), 
+    homogenizar_binaria(bloque_finan_discap, "discapacidad_gral"), 
+    homogenizar_binaria(bloque_finan_pobreza, "pobreza_cat")
+)
+
+
+
+```
+
+
+
+Las desagregaciones para algunas de las combinaciones al segmentar por pobreza tienen una capacidad de generalización limitada y deben ser consideradas como tendencias, no como valores concluyentes.
+
+
+
+```{r}
+#| label: cuadro gt acceso financiero por transversales
+#| warning: false
+#| message: false
+#| echo: false
+
+finan_estratif_gt <- finan_estratif %>%
+  mutate(
+    prop_pct = prop * 100,
+    ci_l_pct = ci_l * 100,
+    ci_u_pct = ci_u * 100,
+    prop_ic = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop_pct,
+      ci_l_pct,
+      ci_u_pct
+    ),
+    n_pond = round(n_pond),
+    cv = round(cv, 2)
+  )
+
+finan_estratif_gt <- finan_estratif_gt %>%
+  select(
+  transversal,
+  nivel,
+  categoria,
+  sexo_cat,
+  n_pond,
+  prop_ic
+ ) %>%
+  pivot_wider(
+    names_from = sexo_cat,
+    values_from = c(n_pond, prop_ic),
+    names_glue = "{.value}_{sexo_cat}"
+  )
+
+finan_estratif_gt <- finan_estratif_gt %>%
+  mutate(
+    transversal = dplyr::recode(
+      transversal,
+      "zona_cat" = "Zona",
+      "etnia_cat" = "Autopercepción indígena",
+      "afrod_cat" = "Afrodescendencia",
+      "discapacidad_gral" = "Discapacidad",
+      "pobreza_cat" = "Pobreza"
+    )
+  )
+
+finan_estratif_gt %>%
+  gt(groupname_col = "transversal") %>%
+  cols_label(
+    nivel = "Transversal",
+    categoria = "Acceso financiero",
+    n_pond_Hombre = "N",
+    prop_ic_Hombre = "% (IC95%)",
+    n_pond_Mujer = "N ",
+    prop_ic_Mujer = "% (IC95%)"
+  ) %>%  
+  tab_spanner(
+    label = "Hogares con jefatura de Hombres",
+    columns = ends_with("_Hombre")
+  ) %>%
+  
+  tab_spanner(
+    label = "Hogares con jefatura de Mujeres",
+    columns = ends_with("_Mujer")
+  ) %>%
+  cols_align(align = "center") 
+
+```
+
+
+
+
+```{r}
+#| label: datos base graficos finanzas
+#| warning: false
+#| message: false
+#| include: false
+
+# =====================================================
+# 1. BLOQUE GENERAL
+# =====================================================
+
+plot_finan_general <- bloque_finan_jefes %>%
+  mutate(
+    prop = prop * 100,
+    ci_l = ci_l * 100,
+    ci_u = ci_u * 100,
+
+    sexo = factor(grupo,
+                  levels = c("Hombre","Mujer")),
+
+    transversal = "General",
+    nivel = "General",
+
+    etiqueta = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop, ci_l, ci_u
+    )
+  )
+
+
+# =====================================================
+# 2. BLOQUE ESTRATIFICADO BASE
+# =====================================================
+
+plot_finan <- finan_estratif %>%
+  mutate(
+    prop = prop * 100,
+    ci_l = ci_l * 100,
+    ci_u = ci_u * 100,
+
+    sexo = factor(
+      sexo_cat,
+      levels = c("Hombre","Mujer")
+    ),
+
+    etiqueta = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop, ci_l, ci_u
+    )
+  )
+
+
+# =====================================================
+# 3. GRAFICO 1 → GENERAL + ZONA
+# =====================================================
+
+plot_finan_zona <- plot_finan %>%
+  filter(transversal == "zona_cat")
+
+plot_finan_g1 <- bind_rows(
+  plot_finan_general,
+  plot_finan_zona
+) %>%
+  mutate(
+    facet = factor(case_when(
+      transversal == "General" ~ "General",
+      TRUE ~  nivel
+    ),
+    levels = c("General", "Urbano", "Rural"))
+  )
+
+
+# =====================================================
+# 4. GRAFICO 2 → SOLO "SI" (grupos sociales)
+# =====================================================
+
+plot_finan_g2 <- plot_finan %>%
+  filter(
+    transversal %in% c(
+      "etnia_cat",
+      "afrod_cat",
+      "discapacidad_gral"
+    )
+  ) %>%
+  mutate(
+    transversal = recode(
+      transversal,
+      etnia_cat = "Autopercepción indígena",
+      afrod_cat = "Afrodescendencia",
+      discapacidad_gral = "Discapacidad"
+    ),
+
+    categoria = factor(
+      categoria,
+      levels = c("Si","No")
+    )
+  )
+
+
+# =====================================================
+# 5. GRAFICO 3 → POBREZA
+# =====================================================
+
+plot_finan_g3 <- plot_finan %>%
+  filter(transversal == "pobreza_cat") %>%
+  mutate(
+    nivel = factor(
+      nivel,
+      levels = c("No pobre por ingresos","Pobreza por ingresos", "Pobreza extrema")
+    ),
+    facet = nivel
+  )
+```
+
+
+g8: acceso financiero a nivel de hogar desagregado por sexo del jef@ del hogar; acceso general (solo por sexo del jef@) y por zona urbana/rural; eje X acceso financiero
+
+
+```{r}
+#| label: grafico 1 finanzas
+#| warning: false
+#| message: false
+#| echo: false
+
+g8 <- ggplot(
+  plot_finan_g1,
+  aes(x = categoria, y = prop, fill = sexo)
+) +
+
+  geom_col(
+    position = position_dodge(1.0),
+    width = 0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(
+      label = gsub(" \\(", "\n(", etiqueta),
+      y = ci_u + 3
+    ),
+    position = position_dodge(1.0),
+    size = 2.3,
+    lineheight = 0.9
+  ) +
+
+  facet_wrap(~facet, scales = "free_x") +
+
+  scale_fill_manual(values = pal_sexo) +
+
+  labs(
+    y = "Proporción (%)",
+    x = NULL,
+    fill = NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+g8
+
+ggsave("graf1_finanzas.png", plot = g8, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+```
+
+
+g9: acceso financiero a nivel de hogar desagregado por sexo del jef@ del hogar; acceso en los grupos "Si" de afrodescendencia, etnia y discapacidad, en todos los casos se conserva la segmentación por sexo; eje X acceso financiero
+
+
+```{r}
+#| label: grafico 2 finanzas
+#| warning: false
+#| message: false
+#| echo: false
+
+g9 <- ggplot(
+  plot_finan_g2,
+  aes(x = categoria, y = prop, fill = sexo)
+) +
+
+  geom_col(
+    position = position_dodge(1.0),
+    width = 0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(
+      label = gsub(" \\(", "\n(", etiqueta),
+      y = ci_u + 3
+    ),
+    position = position_dodge(1.0),
+    size = 1.5,
+    lineheight = 0.9,
+    vjust = 0.25
+  ) +
+
+  facet_grid(nivel ~ transversal) +
+
+  scale_fill_manual(values = pal_sexo) +
+
+  scale_y_continuous(expand = expansion(mult = c(0, .12)))+
+
+  labs(
+    y = "Proporción (%)",
+    x = NULL,
+    fill = NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+g9
+
+ggsave("graf2_finanzas.png", plot = g9, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+```
+
+
+g10: acceso financiero a nivel de hogar desagregado por sexo del jef@ del hogar; acceso en los grupos de pobreza, en todos los casos se conserva la segmentación por sexo; eje X acceso financiero
+
+
+```{r}
+#| label: grafico 3 finanzas
+#| warning: false
+#| message: false
+#| echo: false
+g10 <- ggplot(
+  plot_finan_g3,
+  aes(x = categoria, y = prop, fill = sexo)
+) +
+
+  geom_col(
+    position = position_dodge(1.0),
+    width = 0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(
+      label = gsub(" \\(", "\n(", etiqueta),
+      y = ci_u + 3
+    ),
+    position = position_dodge(1.0),
+    size = 2.3,
+    lineheight = 0.9
+  ) +
+
+  facet_wrap(~facet) +
+
+  scale_fill_manual(values = pal_sexo) +
+
+  labs(
+    y = "Proporción (%)",
+    x = NULL,
+    fill = NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+g10
+
+ggsave("graf3_finanzas.png", plot = g10, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+```
+
+
+
+## Acceso propiedad vivienda
+
+Para este análisis, se restringen los datos para aquellos que tras la limpieza de datos, se logró una identificación única de titularidad de la propiedad; esto implica que los datos de este análisis pertenecen únicamente a aquellas viviendas que tienen estatus de "propia" y que el dueño vive en la misma propiedad; por lo que los casos donde la vivienda sea "propia" pero el dueño no vive en la propiedad (ejemplo rentas, prestamos, etc) no estan considerados en este análisis, ni tampoco los casos en que las propiedades no tengan titularidad o tengan otro estatus.   
+
+Es importante mencionar que la titularidad solo permite identificar al dueñ@ pero ni la estructura de la encuesta ni la construccion de las variables permite determinar de forma precisa aquellas personas que NO son dueñas/no tienen acceso de forma confiable, es decir, personas que viven en un hogar propio pero no son los dueños (ej. niños, adolescentes, familiares, etc) no implican un NO acceso a la propiedad, ya que pueden o NO, tener acceso a otro tipo de propiedades que no son precisamente la vivienda encuestada, por lo que el análisis solo se restringió a la categoría "Si" (viviendas propias, que el dueño vive en la vivienda, que se consideran con "si" acceso a la propiedad; las demás personas no se pueden determinar de forma precisa como NO acceso)
+
+```{r}
+#| label: proporciones propiedad por sexo
+#| warning: false
+#| message: false
+#| include: false
+
+
+
+design_enigh_viv <- svydesign(
+  ids = ~upm,
+  strata = ~est_dis,
+  weights = ~factor_viv,
+  data = fem_pob,
+  nest = TRUE
+)
+options(survey.lonely.psu = "adjust") 
+
+
+# Verificamos el diseño
+summary(design_enigh_viv)
+
+# Revisión del ponderador pob
+summary(design_enigh_viv$variables$factor_viv)
+# Todo bien, no hay NA´s en el ponderador
+
+
+# Restringimos el diseño solo a los registros que tienen informacion en la variable de acceso a la propiedad
+# con valor sí (son los dueños)
+subset_propiedad <- subset(design_enigh_viv, acceso_propiedad_final == "Si")
+
+
+bloque_composicion <- function(design,
+                               var_grupo,
+                               etiqueta,
+                               var_sexo = NULL){
+
+  # ==========================
+  # SIN estratificación (general)
+  # ==========================
+  if(is.null(var_sexo)){
+
+    f <- reformulate(var_grupo)
+
+    res <- svymean(f, design, na.rm = TRUE)
+    tot <- svytotal(f, design, na.rm = TRUE)
+
+    out <- as.data.frame(res)
+
+    out$categoria <- gsub(var_grupo, "", rownames(out))
+    out$variable <- etiqueta
+    names(out)[1] <- "prop"
+
+    out$ci_l <- out$prop - 1.96*out$SE
+    out$ci_u <- out$prop + 1.96*out$SE
+    out$n_pond <- coef(tot)
+    out$cv <- cv(res)
+
+    rownames(out) <- NULL
+    return(out)
+  }
+
+  # ==========================
+  # CON estratificación por sexo
+  # ==========================
+
+  sexos <- unique(design$variables[[var_sexo]])
+
+  resultados <- lapply(sexos, function(sx){
+
+    d_sub <- subset(design,
+                    design$variables[[var_sexo]] == sx)
+
+    f <- reformulate(var_grupo)
+
+    res <- svymean(f, d_sub, na.rm = TRUE)
+    tot <- svytotal(f, d_sub, na.rm = TRUE)
+
+    out <- as.data.frame(res)
+
+    out$categoria <- gsub(var_grupo, "", rownames(out))
+    out$sexo_cat <- sx
+    out$variable <- etiqueta
+
+    names(out)[1] <- "prop"
+
+    out$ci_l <- out$prop - 1.96*out$SE
+    out$ci_u <- out$prop + 1.96*out$SE
+    out$n_pond <- coef(tot)
+    out$cv <- cv(res)
+
+    rownames(out) <- NULL
+    out
+  })
+
+  bind_rows(resultados)
+}
+
+
+bloque_propiedad <- bloque_composicion(
+  design = subset_propiedad,
+  var_grupo = "sexo_cat",
+  etiqueta = "Viviendas con propiedad"
+)
+
+```
+
+
+
+
+
+```{r}
+#| label: cuadro gt propiedad
+#| warning: false
+#| message: false
+#| echo: false
+
+tabla_propiedad <- bloque_propiedad %>%
+  mutate(
+    prop_ic = sprintf(
+      "%.1f%% (%.1f–%.1f)",
+      prop*100,
+      ci_l*100,
+      ci_u*100
+    ),
+    cv_pct = cv*100
+  ) %>%
+  select(
+    variable,
+    categoria,
+    n_pond,
+    prop_ic
+  )
+
+
+propiedad_gt <- tabla_propiedad %>% 
+    select(variable, categoria, n_pond, prop_ic) %>%
+  gt() %>%
+  tab_header(
+    title = "Viviendas con propiedad por sexo del dueñ@",
+    subtitle = "Estimaciones ponderadas, ENIGH 2024 México"
+  ) %>%
+  cols_label(
+    variable = "",
+    categoria = "Sexo",
+    n_pond = "N",
+    prop_ic = "% (IC95%)",
+  ) %>% 
+  fmt_markdown(everything()) %>%
+  opt_table_outline() %>%
+  opt_all_caps(FALSE)
+
+propiedad_gt
+
+```
+
+Ejemplo de lectura: se estimó que alrededor de 10.5 millones de viviendas tuvieron el estatus de propia, el dueño vivía en el lugar y además fue del sexo masculino, lo que representa un 56.7% de los casos, mientras que alrededor de 8 millones de viviendas tuvieron titularidad y ocupación por dueña de sexo femenino....
+
+
+### Transversales en acceso propiedad
+
+
+```{r}
+#| label: estratificacion de acceso propiedad
+#| warning: false
+#| message: false
+#| include: false
+bloque_prop_zona <- bloque_composicion(
+  subset_propiedad,
+  "zona_cat",
+  "Zona",
+  var_sexo = "sexo_cat"
+)
+
+bloque_prop_etnia <- bloque_composicion(
+  subset_propiedad,
+  "etnia_cat",
+  "Autopercepción indígena",
+  var_sexo = "sexo_cat"
+)
+
+bloque_prop_afro <- bloque_composicion(
+  subset_propiedad,
+  "afrod_cat",
+  "Afrodescendencia",
+  var_sexo = "sexo_cat"
+)
+
+bloque_prop_discap <- bloque_composicion(
+  subset_propiedad,
+  "discapacidad_gral",
+  "Discapacidad",
+  var_sexo = "sexo_cat"
+)
+
+bloque_prop_pobreza <- bloque_composicion(
+  subset_propiedad,
+  "pobreza_cat",
+  "Condición de pobreza",
+  var_sexo = "sexo_cat"
+)
+
+propiedad_estratif <- bind_rows(
+  bloque_prop_zona,
+  bloque_prop_etnia,
+  bloque_prop_afro,
+  bloque_prop_discap,
+  bloque_prop_pobreza
+)
+
+
+```
+
+  
+  
+Las estratificaciones en este bloque permiten una generalización confiable al universo de estudio en todos sus niveles de desagregación
+  
+
+
+```{r}
+#| label: datos para cuadro gt transversales propiedad
+#| warning: false
+#| message: false
+#| echo: false
+tabla_prop_estratif <- propiedad_estratif %>%
+  mutate(
+    prop_ic = sprintf(
+      "%.1f%% (%.1f–%.1f)",
+      prop*100,
+      ci_l*100,
+      ci_u*100
+    ),
+    cv_pct = cv*100
+  )
+
+tabla_prop_wide <- tabla_prop_estratif %>%
+  select(variable, categoria, sexo_cat, prop_ic, n_pond) %>%
+  pivot_wider(
+    names_from = sexo_cat,
+    values_from = c(prop_ic, n_pond),
+    names_glue = "{sexo_cat}_{.value}"
+  )
+
+
+propiedad_estratif_gt <- tabla_prop_wide %>%
+  select(
+    variable,
+    categoria,
+    Hombre_n_pond,
+    Hombre_prop_ic,
+    Mujer_n_pond,
+    Mujer_prop_ic
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Viviendas con propiedad por características sociodemográficas",
+    subtitle = "Estimaciones ponderadas, ENIGH 2024"
+  ) %>%
+    tab_spanner(
+    label = "Viviendas propias con dueño Hombre",
+    columns = c(Hombre_n_pond, Hombre_prop_ic)
+  ) %>%tab_spanner(
+    label = "Viviendas propias con dueña Mujer",
+    columns = c(Mujer_n_pond, Mujer_prop_ic)
+  ) %>%
+  cols_label(
+    variable = "Transversal",
+    categoria = "Categoría",
+    Hombre_n_pond = "N",
+    Hombre_prop_ic = "% (IC95%)",
+    Mujer_n_pond = "N",
+    Mujer_prop_ic = "% (IC95%)",
+  ) %>%
+  opt_table_outline() %>%
+  opt_all_caps(FALSE)
+
+propiedad_estratif_gt
+```
+
+
+
+
+```{r}
+#| label: datos para graficos propiedad
+#| warning: false
+#| message: false
+#| include: false
+
+prop_general_plot <- bloque_propiedad %>%
+  rename(sexo_cat = categoria) %>%
+  mutate(
+    categoria = "General",
+    variable = "General"
+  )
+
+propiedad_master <- bind_rows(
+  prop_general_plot,
+  propiedad_estratif
+)
+
+
+plot_propiedad <- propiedad_master %>% 
+  rename(sexo = sexo_cat) %>%
+  mutate(
+    sexo = factor(sexo, levels = c("Hombre","Mujer")),
+    
+    etiqueta = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop*100,
+      ci_l*100,
+      ci_u*100
+    ),
+    
+    prop = prop*100,
+    ci_l = ci_l*100,
+    ci_u = ci_u*100
+  )
+
+
+plot_propiedad$categoria <- factor(
+  plot_propiedad$categoria,
+  levels = c(
+    "General",
+    "Urbano","Rural",
+    "No","Si",
+    "No pobre por ingresos",
+    "Pobreza por ingresos",
+    "Pobreza extrema"
+  )
+)
+
+plot_propiedad$variable <- factor(
+  plot_propiedad$variable,
+  levels = c(
+    "General",
+    "Zona",
+    "Afrodescendencia",
+    "Autopercepción indígena",
+    "Discapacidad",
+    "Condición de pobreza"
+  )
+)
+
+```
+
+
+
+g11: proporcion de viviendas con estatus propio y que el dueñ@ vive en el lugar, de forma general (desagregado solo por sexo del dueñ@), y por zona donde se conserva la segmentación por sexo del dueñ@
+
+
+```{r}
+#| label: grafico 1 propiedad
+#| warning: false
+#| message: false
+#| echo: false
+
+plot_prop_g1 <- plot_propiedad %>% 
+  filter(variable %in% c("General","Zona")) %>%
+  mutate(
+    facet = ifelse(variable == "General",
+                   "General",
+                   "Zona")
+  )
+
+
+plot_prop_g2 <- plot_propiedad %>% 
+  filter(variable %in% c(
+    "Autopercepción indígena",
+    "Afrodescendencia",
+    "Discapacidad"
+  )) %>% 
+    rename(transversal = variable,
+      nivel = categoria)
+
+
+plot_prop_g3 <- plot_propiedad %>% 
+  filter(variable == "Condición de pobreza") %>%
+  mutate(facet = "Pobreza")
+
+
+
+g11 <- ggplot(
+  plot_prop_g1,
+  aes(x = categoria, y = prop, fill = sexo)
+) +
+
+  geom_col(
+    position = position_dodge(1.0),
+    width = 0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(
+      label = gsub(" \\(", "\n(", etiqueta),
+      y = ci_u + 3
+    ),
+    position = position_dodge(1.0),
+    size = 2.3,
+    lineheight = 0.9
+  ) +
+
+  facet_wrap(~facet, scales = "free_x") +
+
+  scale_fill_manual(values = pal_sexo) +
+
+  labs(
+    y = "Proporción (%)",
+    x = NULL,
+    fill = NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+g11
+
+ggsave("graf1_propiedad.png", plot = g11, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+```
+
+
+g12: proporcion de viviendas con estatus propio y que el dueñ@ vive en el lugar, en los grupos "Si" de afrodescendencia, etnia y discapacidad, en todos los casos se conserva la segmentación por sexo del dueñ@
+
+```{r}
+#| label: grafico 2 propiedad
+#| warning: false
+#| message: false
+#| echo: false
+
+g12 <- ggplot(
+  plot_prop_g2,
+  aes(x = nivel, y = prop, fill = sexo)
+) +
+
+  geom_col(
+    position = position_dodge(1.0),
+    width = 0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(
+      label = gsub(" \\(", "\n(", etiqueta),
+      y = ci_u + 3
+    ),
+    position = position_dodge(1.0),
+    size = 2,
+    lineheight = 0.9,
+    vjust = 0.25
+  ) +
+
+  facet_grid( ~ transversal) +
+
+  scale_fill_manual(values = pal_sexo) +
+
+  labs(
+    y = "Proporción (%)",
+    x = NULL,
+    fill = NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+g12
+
+ggsave("graf2_propiedad.png", plot = g12, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+```
+
+
+
+g13: proporcion de viviendas con estatus propio y que el dueñ@ vive en el lugar, por grupo de pobreza, en todos los casos se conserva la segmentación por sexo del dueñ@
+
+
+```{r}
+#| label: grafico 3 propiedad
+#| warning: false
+#| message: false
+#| echo: false
+g13 <- ggplot(
+  plot_prop_g3,
+  aes(x = categoria, y = prop, fill = sexo)
+) +
+
+  geom_col(
+    position = position_dodge(1.0),
+    width = 0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(
+      label = gsub(" \\(", "\n(", etiqueta),
+      y = ci_u + 3
+    ),
+    position = position_dodge(1.0),
+    size = 2.3,
+    lineheight = 0.9
+  ) +
+
+  facet_wrap(~facet) +
+
+  scale_fill_manual(values = pal_sexo) +
+
+  labs(
+    y = "Proporción (%)",
+    x = NULL,
+    fill = NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+g13
+
+ggsave("graf3_propiedad.png", plot = g13, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+```
+
+
+
+
+## Mercado laboral
+
+
+
+
+```{r}
+#| label: bloque general mercado laboral
+#| warning: false
+#| message: false
+#| echo: false
+
+bloque_merc_laboral <- bloque_multinomial_bin(
+  design = design_enigh_pob,
+  var_multi = "mercado_laboral",   
+  etiqueta_var = "Mercado laboral",
+  var_bin = "sexo_cat"    
+)
+
+bloque_merc_laboral_gt <- bloque_merc_laboral %>%
+  select(Característica, n_Hombre, prop_ic_Hombre, n_Mujer, prop_ic_Mujer) %>% 
+  gt() %>%
+  tab_header(
+    title = "Acceso a mercado laboral",
+  ) %>%
+  tab_spanner(
+    label = "Hombres",
+    columns = c(n_Hombre, prop_ic_Hombre)
+  ) %>%
+  tab_spanner(
+    label = "Mujeres",
+    columns = c(n_Mujer, prop_ic_Mujer)
+  ) %>%
+  cols_label(
+    Característica = "",
+    n_Hombre = "N",
+    prop_ic_Hombre = "% (IC95%)",
+    n_Mujer = "N",
+    prop_ic_Mujer = "% (IC95%)"
+  ) %>%
+  fmt_markdown(everything()) %>%
+  opt_table_outline() %>%
+  opt_all_caps(FALSE)
+
+bloque_merc_laboral_gt
+```
+
+
+Ejemplo de lectura: para los hombres que declararon actividades laborales, se estimó que un 52% de los casos, sus actividades fueron en el sector informal no profesional, un 25.1% en el sector formal no profesional, un 14.3% en el sector formal profesional y un 8.6% en el sector informal profesional mientras que en el caso de las mujeres...
+
+
+
+```{r}
+#| label: estratificación mercado laboral
+#| warning: false
+#| message: false
+#| include: false
+labor_zona <- bloque_multinomial_bin_estrat(
+  design = design_enigh_pob,
+  var_multi = "mercado_laboral",
+  var_bin = "sexo_cat",
+  var_transversal = "zona_cat",
+  etiqueta_var = "Formalidad laboral"
+)
+
+labor_etnia <- bloque_multinomial_bin_estrat(
+  design = design_enigh_pob,
+  var_multi = "mercado_laboral",
+  var_bin = "sexo_cat",
+  var_transversal = "etnia_cat",
+  etiqueta_var = "Formalidad laboral"
+)
+
+labor_afro <- bloque_multinomial_bin_estrat(
+  design = design_enigh_pob,
+  var_multi = "mercado_laboral",
+  var_bin = "sexo_cat",
+  var_transversal = "afrod_cat",
+  etiqueta_var = "Formalidad laboral"
+)
+
+labor_discap <- bloque_multinomial_bin_estrat(
+  design = design_enigh_pob,
+  var_multi = "mercado_laboral",
+  var_bin = "sexo_cat",
+  var_transversal = "discapacidad_gral",
+  etiqueta_var = "Formalidad laboral"
+)
+
+labor_pobreza <- bloque_multinomial_bin_estrat(
+  design = design_enigh_pob,
+  var_multi = "mercado_laboral",
+  var_bin = "sexo_cat",
+  var_transversal = "pobreza_cat",
+  etiqueta_var = "Formalidad laboral"
+)
+# homogenizar datos mercado laboral estratificados
+
+  mercado_lab_tran <- bind_rows(
+  homogeniza_multinomial(labor_zona,    "Zona"),
+  homogeniza_multinomial(labor_etnia,   "Autopercepción indígena"),
+  homogeniza_multinomial(labor_afro,    "Afrodescendencia"),
+  homogeniza_multinomial(labor_discap,  "Discapacidad"),
+  homogeniza_multinomial(labor_pobreza, "Pobreza")
+)
+
+```
+
+
+Las desagregaciones para algunas de las combinaciones al segmentar por pobreza tienen una capacidad de generalización limitada y deben ser consideradas como tendencias, no como valores concluyentes.
+
+
+
+```{r}
+#| label: cuadro gt mercado laboral por transversales
+#| warning: false
+#| message: false
+#| echo: false
+mercado_lab_tran_gt <- mercado_lab_tran %>%
+  select(transversal, categoria, Característica, Hombre, Mujer) %>% 
+  gt(groupname_col = "transversal") %>%
+  tab_header(
+    title = "Mercado laboral por variables transversales ",
+  ) %>%
+  cols_label(
+    transversal = "Transversal",
+    categoria = "",
+    Característica = "Categoría",
+    Hombre = "Hombres\nn (%)(IC95%)",
+    Mujer = "Mujeres \nn (%)(IC95%)"
+  )
+
+mercado_lab_tran_gt
+```
+
+
+Ejemplo de lectura: Se estimó que en las zonas urbanas, en el caso de los hombres, un 43.6% realizó actividades de tipo informal no profesional, un 28.9% realizó actividades de tipo formal no profesional, un 17.5% lo hizo en el sector formal profesional y un 10% en el sector informal profesional...
+
+
+
+```{r}
+#| label: extraer datos bloque general mercado laboral
+#| warning: false
+#| message: false
+#| include: false
+
+# --- GENERAL ---
+laboral_plot <- bloque_merc_laboral %>%
+  mutate(
+    categoria = sub("Mercado laboral : ", "", Característica)
+  ) %>%
+
+  bind_cols(extrae_ic(.$prop_ic_Hombre)) %>%
+  rename(prop_H = prop, ci_l_H = ci_l, ci_u_H = ci_u) %>%
+
+  bind_cols(extrae_ic(.$prop_ic_Mujer)) %>%
+  rename(prop_M = prop, ci_l_M = ci_l, ci_u_M = ci_u) %>%
+
+  pivot_longer(
+    cols = c(prop_H, prop_M,
+             ci_l_H, ci_l_M,
+             ci_u_H, ci_u_M),
+    names_to = c(".value","sexo"),
+    names_pattern="(prop|ci_l|ci_u)_(H|M)"
+  ) %>%
+  mutate(
+    sexo = recode(sexo,
+                  H="Hombre",
+                  M="Mujer"),
+    facet = "General"
+  )
+
+# --- ZONA ---
+labor_zona_plot <- labor_zona %>%
+  mutate(
+    categoria = sub("Formalidad laboral : ", "", Característica)
+  ) %>%
+
+  bind_cols(extrae_ic(.$prop_ic_Hombre)) %>%   
+   rename(prop_H = prop, ci_l_H = ci_l, ci_u_H = ci_u) %>%
+
+  bind_cols(extrae_ic(.$prop_ic_Mujer)) %>%    
+  rename(prop_M = prop, ci_l_M = ci_l, ci_u_M = ci_u) %>%
+
+  pivot_longer(
+    cols = c(prop_H, prop_M,
+             ci_l_H, ci_l_M,
+             ci_u_H, ci_u_M),
+    names_to = c(".value","sexo"),
+    names_pattern="(prop|ci_l|ci_u)_(H|M)"
+  ) %>%
+  mutate(
+    sexo = recode(sexo,
+                  H="Hombre",
+                  M="Mujer"),
+    facet = categoria_transversal
+  )
+
+plot_labor_g1 <- bind_rows(
+  laboral_plot,
+  labor_zona_plot
+)
+
+
+plot_labor_g1 <- plot_labor_g1 %>%
+  mutate(
+    sexo = factor(sexo, levels=c("Hombre","Mujer")),
+
+    facet = factor(
+      facet,
+      levels=c("General","Urbano","Rural")
+    ),
+
+    categoria = factor(
+      categoria,
+      levels=c(
+        "Formal profesional",
+        "Formal no profesional",
+        "Informal profesional",
+        "Informal no profesional"
+      )
+    ),
+
+    etiqueta = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop, ci_l, ci_u
+    )
+  )
+
+# Datos grafico dos mercado laboral
+
+plot_labor_g2 <- mercado_lab_tran %>%
+  filter(
+    transversal %in% c(
+      "Autopercepción indígena",
+      "Afrodescendencia",
+      "Discapacidad"
+    )
+  ) %>%
+  mutate(
+categoria_lab = sub(
+  "Formalidad laboral : ",
+  "",
+  Característica)
+  ) %>%
+
+  bind_cols(extrae_ic_tabla(.$Hombre)) %>%
+  rename(prop_H = prop, ci_l_H = ci_l, ci_u_H = ci_u) %>%
+
+  bind_cols(extrae_ic_tabla(.$Mujer)) %>%
+  rename(prop_M = prop, ci_l_M = ci_l, ci_u_M = ci_u)
+
+plot_labor_g2 <- plot_labor_g2 %>%
+  pivot_longer(
+    cols = c(prop_H, prop_M,
+             ci_l_H, ci_l_M,
+             ci_u_H, ci_u_M),
+    names_to = c(".value","sexo"),
+    names_pattern="(prop|ci_l|ci_u)_(H|M)"
+  ) %>%
+  mutate(
+    sexo = recode(sexo,
+                  H="Hombre",
+                  M="Mujer"),
+    categoria_lab = factor(
+      categoria_lab,
+      levels=c("Formal profesional","Formal no profesional","Informal profesional", "Informal no profesional")
+    ),
+
+    sexo = factor(sexo,
+                  levels=c("Hombre","Mujer")),
+
+    etiqueta = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop, ci_l, ci_u
+    )
+  )
+
+  plot_labor_g2$transversal <- factor(
+  plot_labor_g2$transversal,
+  levels = c(
+    "Afrodescendencia",
+    "Autopercepción indígena",
+    "Discapacidad"
+  )
+)
+
+# Datos gráfico 3 mercado laboral 
+
+plot_labor_g3 <- mercado_lab_tran %>%
+  filter(transversal == "Pobreza") %>%
+  mutate(
+    nivel = factor(
+      categoria,
+      levels = c("No pobre por ingresos","Pobreza por ingresos", "Pobreza extrema")
+    ),
+    facet = nivel
+  )%>%
+  mutate(
+categoria_lab = sub(
+  "Formalidad laboral : ",
+  "",
+  Característica)
+  ) %>%
+
+  bind_cols(extrae_ic_tabla(.$Hombre)) %>%
+  rename(prop_H = prop, ci_l_H = ci_l, ci_u_H = ci_u) %>%
+
+  bind_cols(extrae_ic_tabla(.$Mujer)) %>%
+  rename(prop_M = prop, ci_l_M = ci_l, ci_u_M = ci_u)
+
+plot_labor_g3 <- plot_labor_g3 %>%
+  pivot_longer(
+    cols = c(prop_H, prop_M,
+             ci_l_H, ci_l_M,
+             ci_u_H, ci_u_M),
+    names_to = c(".value","sexo"),
+    names_pattern="(prop|ci_l|ci_u)_(H|M)"
+  ) %>%
+  mutate(
+    sexo = recode(sexo,
+                  H="Hombre",
+                  M="Mujer"),
+    categoria_lab = factor(
+      categoria_lab,
+      levels=c("Formal profesional","Formal no profesional","Informal profesional", "Informal no profesional")
+    ),
+
+    sexo = factor(sexo,
+                  levels=c("Hombre","Mujer")),
+
+    etiqueta = sprintf(
+      "%.1f%% (%.1f, %.1f)",
+      prop, ci_l, ci_u
+    )
+  )
+
+
+```
+
+
+
+
+g14: mercado laboral general (solo por sexo) y en zonas urbano/rural; en todos los casos se mantiene la desagregación por sexo; eje X mercado laboral
+
+
+```{r}
+#| label: grafico 1 acceso laboral
+#| warning: false
+#| message: false
+#| echo: false
+
+g14 <- ggplot(
+  plot_labor_g1,
+  aes(x = categoria, y = prop, fill = sexo)
+) +
+
+  geom_col(
+    position = position_dodge(width = 1.0),
+    width = 0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(width = 1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(label = gsub(" \\(", "\n(", etiqueta),
+     y = ci_u + 3),
+    position = position_dodge(width = 1.1),
+    vjust = 0.25,
+    size = 1.4,
+     lineheight = 0.9
+  ) +
+
+  facet_wrap(~facet, nrow = 1) +
+  
+  scale_x_discrete(
+  labels = c(
+    "Formal profesional" = "Formal\nprofesional",
+    "Formal no profesional" = "Formal no\nprofesional",
+    "Informal profesional" = "Informal\nprofesional",
+    "Informal no profesional" = "Informal no\nprofesional"
+  ))+
+
+  scale_fill_manual(values = pal_sexo) +
+
+  labs(
+    x=NULL,
+    y="Proporción (%)",
+    fill=NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position="top",
+    axis.text.x = element_text(
+      angle = 0,
+      hjust = 0.5,
+      size = 5
+    ),
+    strip.text = element_text(
+      face = "bold",
+      color = "black")
+  ) +
+
+  coord_cartesian(ylim=c(0,90))
+
+g14
+ggsave("graf1_laboral.png", plot = g14, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+```
+
+
+
+g15: mercado laboral en los grupos "si" (si es afrodescendiente, si etnia, si discapacidad); en todos los casos se mantiene la desagregación por sexo; eje X mercado laboral
+
+
+```{r}
+#| label: graf 2 mercado laboral
+#| warning: false
+#| message: false
+#| echo: false
+g15 <- ggplot(
+  plot_labor_g2,
+  aes(x = categoria_lab, y = prop, fill = sexo)
+) +
+
+  geom_col(
+    position = position_dodge(1.0),
+    width = 0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(
+      label = gsub(" \\(", "\n(", etiqueta),
+      y = ci_u + 3
+    ),
+    position = position_dodge(1.1),
+    size = 1.3,
+    lineheight = 0.9,
+    vjust = 0.25
+  ) +
+
+  facet_grid(categoria ~ transversal) +
+  
+  scale_x_discrete(
+  labels = c(
+    "Formal profesional" = "Formal\nprofesional",
+    "Formal no profesional" = "Formal no\nprofesional",
+    "Informal profesional" = "Informal\nprofesional",
+    "Informal no profesional" = "Informal no\nprofesional"
+  ))+
+
+  scale_y_continuous(expand = expansion(mult = c(0, .12)))+
+
+  scale_fill_manual(values = pal_sexo) +
+
+  labs(
+    y = "Proporción (%)",
+    x = NULL,
+    fill = NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(
+      angle = 0,
+      hjust = 0.5,
+      size = 5
+    ),
+    strip.text = element_text(
+      face = "bold",
+      color = "black"
+    )
+  )
+
+g15
+
+ggsave(
+  "graf2_laboral.png", plot = g15, path = "../output", width = 7, height = 5, units = "in", dpi = 600
+)
+
+```
+
+
+g16: mercado laboral general por categoría de pobreza; en todos los casos se mantiene la desagregación por sexo; eje X mercado laboral
+
+
+```{r}
+#| label: grafico 3 mercado laboral
+#| warning: false
+#| message: false
+#| echo: false
+g16 <- ggplot(
+  plot_labor_g3,
+  aes(x = categoria_lab, y = prop, fill = sexo)
+) +
+
+  geom_col(
+    position = position_dodge(1.0),
+    width = 0.7
+  ) +
+
+  geom_errorbar(
+    aes(ymin = ci_l, ymax = ci_u),
+    position = position_dodge(1.0),
+    width = 0.3,
+    linewidth = 0.7,
+    color = "#a18d06f4"
+  ) +
+
+  geom_text(
+    aes(
+      label = gsub(" \\(", "\n(", etiqueta),
+      y = ci_u + 3
+    ),
+    position = position_dodge(1.13),
+    size = 1.4,
+    lineheight = 1.0,
+     vjust = 0.25
+  ) +
+
+  facet_wrap(~facet) +
+
+  scale_fill_manual(values = pal_sexo) +
+
+  scale_x_discrete(
+  labels = c(
+    "Formal profesional" = "Formal\nprofesional",
+    "Formal no profesional" = "Formal no\nprofesional",
+    "Informal profesional" = "Informal\nprofesional",
+    "Informal no profesional" = "Informal no\nprofesional"
+  ))+
+
+  labs(
+    y = "Proporción (%)",
+    x = NULL,
+    fill = NULL
+  ) +
+
+  theme_light() +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(
+      angle = 0,
+      hjust = 0.5,
+      size = 5
+    ),
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+g16
+
+ggsave("graf3_laboral.png", plot = g16, path = "../output", width = 7, height = 5, units = "in", dpi = 600)
+
+```
